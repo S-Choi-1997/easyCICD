@@ -8,7 +8,10 @@
       "Bash(docker system info:*)",
       "Bash(grep:*)",
       "Bash(docker tag:*)",
-      "Bash(docker push:*)"
+      "Bash(docker push:*)",
+      "Bash(docker compose:*)",
+      "Bash(docker exec:*)",
+      "Bash(git add:*)"
     ]
   }
 }

@@ -58,6 +58,13 @@ impl Database {
         self.get_project_by_id(id).await
     }
 
+    pub async fn get_project(&self, id: i64) -> Result<Option<Project>, sqlx::Error> {
+        sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
     pub async fn get_project_by_id(&self, id: i64) -> Result<Project, sqlx::Error> {
         sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE id = ?")
             .bind(id)
@@ -78,6 +85,14 @@ impl Database {
             .await
     }
 
+    pub async fn delete_project(&self, id: i64) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM projects WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn update_project_active_slot(&self, id: i64, slot: Slot) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE projects SET active_slot = ? WHERE id = ?")
             .bind(slot.to_string())
@@ -96,14 +111,6 @@ impl Database {
         let query = format!("UPDATE projects SET {} = ? WHERE id = ?", column);
         sqlx::query(&query)
             .bind(container_id)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    pub async fn delete_project(&self, id: i64) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM projects WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -143,6 +150,13 @@ impl Database {
 
         let id = result.last_insert_rowid();
         self.get_build_by_id(id).await
+    }
+
+    pub async fn get_build(&self, id: i64) -> Result<Option<Build>, sqlx::Error> {
+        sqlx::query_as::<_, Build>("SELECT * FROM builds WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
     }
 
     pub async fn get_build_by_id(&self, id: i64) -> Result<Build, sqlx::Error> {
@@ -187,9 +201,27 @@ impl Database {
         Ok(())
     }
 
-    pub async fn update_build_deployed_slot(&self, id: i64, slot: Slot) -> Result<(), sqlx::Error> {
+    pub async fn update_build_deployed_slot(&self, id: i64, slot: Option<String>) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE builds SET deployed_slot = ? WHERE id = ?")
-            .bind(slot.to_string())
+            .bind(slot)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_project_blue_container(&self, id: i64, container_id: Option<String>) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE projects SET blue_container_id = ? WHERE id = ?")
+            .bind(container_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_project_green_container(&self, id: i64, container_id: Option<String>) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE projects SET green_container_id = ? WHERE id = ?")
+            .bind(container_id)
             .bind(id)
             .execute(&self.pool)
             .await?;

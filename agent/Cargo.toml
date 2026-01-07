@@ -50,3 +50,10 @@ hex = "0.4"
 # Async utilities
 futures = "0.3"
 async-trait = "0.1"
+
+# UUID generation
+uuid = { version = "1", features = ["v4"] }
+futures-util = "0.3"
+
+# Glob pattern matching
+globset = "0.4"

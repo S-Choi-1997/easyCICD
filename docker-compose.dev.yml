@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  rust-dev:
+    image: rust:1.92
+    container_name: easycicd-rust-dev
+    working_dir: /workspace
+    volumes:
+      - ./agent:/workspace
+      - cargo-cache:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+    command: sleep infinity
+    environment:
+      - RUST_BACKTRACE=1
+    stdin_open: true
+    tty: true
+
+volumes:
+  cargo-cache:
+  cargo-git:
