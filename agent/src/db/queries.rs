@@ -22,6 +22,30 @@ impl Database {
         let migration2 = include_str!("../../migrations/002_settings.sql");
         sqlx::raw_sql(migration2).execute(&self.pool).await?;
 
+        let migration3 = include_str!("../../migrations/003_github_pat.sql");
+        sqlx::raw_sql(migration3).execute(&self.pool).await?;
+
+        Ok(())
+    }
+
+    // GitHub PAT operations (stored in settings)
+    pub async fn get_github_pat(&self) -> Result<Option<String>, sqlx::Error> {
+        let result: Option<(String,)> = sqlx::query_as(
+            "SELECT value FROM settings WHERE key = 'github_pat'"
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(result.map(|(value,)| value).filter(|v| !v.is_empty()))
+    }
+
+    pub async fn set_github_pat(&self, pat: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('github_pat', ?, datetime('now'))"
+        )
+        .bind(pat)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

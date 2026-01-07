@@ -3,13 +3,14 @@ mod projects;
 mod builds;
 mod ws;
 mod settings;
+mod github_api;
 
 pub use webhook::github_webhook;
 pub use projects::projects_routes;
 pub use builds::builds_routes;
 pub use ws::ws_handler;
 
-use axum::{routing::get, Router};
+use axum::{routing::{get, post}, Router};
 use crate::state::AppState;
 
 pub fn api_routes() -> Router<AppState> {
@@ -17,4 +18,9 @@ pub fn api_routes() -> Router<AppState> {
         .nest("/projects", projects_routes())
         .nest("/builds", builds_routes())
         .route("/settings/webhook-secret", get(settings::get_webhook_secret))
+        .route("/settings/github-pat", post(github_api::set_github_pat))
+        .route("/settings/github-pat-status", get(github_api::get_github_pat_status))
+        .route("/github/repositories", get(github_api::list_repositories))
+        .route("/github/branches", get(github_api::list_branches))
+        .route("/github/folders", get(github_api::list_folders))
 }
