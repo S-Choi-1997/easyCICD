@@ -54,6 +54,11 @@ Phase 6: 배포 설정
 [T] 환경변수 제거 (DATABASE_URL, RUST_LOG 하드코딩)
 [T] Webhook Secret 자동 생성 (DB 저장)
 [T] GET /api/settings/webhook-secret API
+[T] Docker Hub 이미지 배포 (choho97/lightweight-ci:latest)
+[T] SQLite 데이터베이스 자동 생성 (create_if_missing)
+[T] Axum 0.7 호환성 (라우팅 문법, fallback_service)
+[T] GLIBC 호환성 (Debian Trixie 통일)
+[T] 포트 구성 (웹 UI: 10000, 리버스 프록시: 9999)
 [F] README.md
 [F] DEPLOYMENT.md
 [F] 통합 테스트
@@ -67,5 +72,6 @@ Phase 7: 개선사항
 [F] 알림 시스템
 
 ================================================================================
-최근 커밋: 8bc75c4 (Phase 2 완료)
-다음 커밋: Phase 5 Web UI (Svelte)
+최근 커밋: 13f8cc6 (Axum/SQLite 호환성 수정, 배포 완료)
+Docker Hub: choho97/lightweight-ci:latest (sha256:df8d25968e0918...)
+다음 작업: Phase 5 WebSocket 연결 또는 Phase 6 문서화

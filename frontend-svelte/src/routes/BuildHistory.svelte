@@ -20,7 +20,7 @@
   async function loadProjectInfo() {
     try {
       const response = await fetch(`${API_BASE}/projects/${projectId}`);
-      if (!response.ok) throw new Error('Failed to fetch project');
+      if (!response.ok) throw new Error('프로젝트 정보를 가져올 수 없습니다');
       project = await response.json();
     } catch (err) {
       error = err.message;
@@ -33,7 +33,7 @@
 
     try {
       const response = await fetch(`${API_BASE}/builds?project_id=${projectId}&limit=50`);
-      if (!response.ok) throw new Error('Failed to fetch builds');
+      if (!response.ok) throw new Error('빌드 목록을 가져올 수 없습니다');
       builds = await response.json();
     } catch (err) {
       error = err.message;
@@ -47,23 +47,23 @@
       const response = await fetch(`${API_BASE}/projects/${projectId}/builds`, {
         method: 'POST'
       });
-      if (!response.ok) throw new Error('Failed to trigger build');
+      if (!response.ok) throw new Error('빌드를 시작할 수 없습니다');
 
       const result = await response.json();
-      alert(`Build #${result.build_id} triggered successfully!`);
+      alert(`빌드 #${result.build_id}가 시작되었습니다!`);
       setTimeout(() => loadBuilds(), 1000);
     } catch (err) {
-      alert('Failed to trigger build: ' + err.message);
+      alert('빌드 시작 실패: ' + err.message);
     }
   }
 
   async function showBuildDetail(buildId) {
     try {
       const response = await fetch(`${API_BASE}/builds/${buildId}`);
-      if (!response.ok) throw new Error('Failed to fetch build details');
+      if (!response.ok) throw new Error('빌드 상세 정보를 가져올 수 없습니다');
       selectedBuild = await response.json();
     } catch (err) {
-      alert('Failed to load build details: ' + err.message);
+      alert('빌드 상세 정보 로딩 실패: ' + err.message);
     }
   }
 
@@ -72,18 +72,18 @@
     const now = new Date();
     const seconds = Math.floor((now - date) / 1000);
 
-    if (seconds < 60) return 'just now';
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-    return `${Math.floor(seconds / 86400)}d ago`;
+    if (seconds < 60) return '방금 전';
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}분 전`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}시간 전`;
+    return `${Math.floor(seconds / 86400)}일 전`;
   }
 </script>
 
 <header>
   <div class="header-content">
-    <h1>Lightweight CI/CD</h1>
+    <h1>Easy CI/CD</h1>
     <div class="header-actions">
-      <a href="/" use:link class="btn btn-secondary">← Back to Dashboard</a>
+      <a href="/" use:link class="btn btn-secondary">← 대시보드로 돌아가기</a>
     </div>
   </div>
 </header>
@@ -96,10 +96,10 @@
         <h2 class="card-title">{project.name}</h2>
       </div>
       <div class="project-info">
-        <div><strong>Repo:</strong> {project.repo}</div>
-        <div><strong>Branch:</strong> {project.branch}</div>
-        <div><strong>Active Slot:</strong> {project.active_slot}</div>
-        <div><strong>Path Filter:</strong> {project.path_filter}</div>
+        <div><strong>레포지토리:</strong> {project.repo}</div>
+        <div><strong>브랜치:</strong> {project.branch}</div>
+        <div><strong>활성 슬롯:</strong> {project.active_slot}</div>
+        <div><strong>경로 필터:</strong> {project.path_filter}</div>
       </div>
     </div>
   {/if}
@@ -107,24 +107,24 @@
   <!-- Build List -->
   <div class="card">
     <div class="card-header">
-      <h2 class="card-title">Build History</h2>
-      <button on:click={triggerBuild} class="btn btn-primary btn-sm">Trigger Build</button>
+      <h2 class="card-title">빌드 내역</h2>
+      <button on:click={triggerBuild} class="btn btn-primary btn-sm">빌드 시작</button>
     </div>
 
     {#if loading}
       <div class="loading">
         <div class="spinner"></div>
-        <p>Loading builds...</p>
+        <p>빌드 불러오는 중...</p>
       </div>
     {:else if error}
       <div class="empty-state">
-        <h3>Error loading builds</h3>
+        <h3>빌드 로딩 오류</h3>
         <p>{error}</p>
       </div>
     {:else if builds.length === 0}
       <div class="empty-state">
-        <p>No builds yet</p>
-        <button on:click={triggerBuild} class="btn btn-primary mt-2">Trigger First Build</button>
+        <p>빌드 내역이 없습니다</p>
+        <button on:click={triggerBuild} class="btn btn-primary mt-2">첫 번째 빌드 시작</button>
       </div>
     {:else}
       <ul class="build-list">
@@ -152,8 +152,8 @@
   {#if selectedBuild}
     <div class="card">
       <div class="card-header">
-        <h2 class="card-title">Build #{selectedBuild.build_number}</h2>
-        <button on:click={() => selectedBuild = null} class="btn btn-secondary btn-sm">Close</button>
+        <h2 class="card-title">빌드 #{selectedBuild.build_number}</h2>
+        <button on:click={() => selectedBuild = null} class="btn btn-secondary btn-sm">닫기</button>
       </div>
 
       <div class="mb-2">
@@ -164,24 +164,24 @@
           </span>
         </div>
         <div class="project-info mt-2">
-          <div><strong>Commit:</strong> <span class="build-commit">{selectedBuild.commit_hash}</span></div>
+          <div><strong>커밋:</strong> <span class="build-commit">{selectedBuild.commit_hash}</span></div>
           {#if selectedBuild.commit_message}
-            <div><strong>Message:</strong> {selectedBuild.commit_message}</div>
+            <div><strong>메시지:</strong> {selectedBuild.commit_message}</div>
           {/if}
           {#if selectedBuild.author}
-            <div><strong>Author:</strong> {selectedBuild.author}</div>
+            <div><strong>작성자:</strong> {selectedBuild.author}</div>
           {/if}
-          <div><strong>Created:</strong> {new Date(selectedBuild.created_at).toLocaleString()}</div>
+          <div><strong>시작 시각:</strong> {new Date(selectedBuild.created_at).toLocaleString('ko-KR')}</div>
           {#if selectedBuild.finished_at}
-            <div><strong>Finished:</strong> {new Date(selectedBuild.finished_at).toLocaleString()}</div>
+            <div><strong>완료 시각:</strong> {new Date(selectedBuild.finished_at).toLocaleString('ko-KR')}</div>
           {/if}
         </div>
       </div>
 
-      <h3>Build Log</h3>
+      <h3>빌드 로그</h3>
       <div class="log-viewer">
-        <div class="log-line">Log file: {selectedBuild.log_path}</div>
-        <div class="log-line text-muted">Log streaming not yet implemented in this version</div>
+        <div class="log-line">로그 파일: {selectedBuild.log_path}</div>
+        <div class="log-line text-muted">로그 스트리밍은 아직 구현되지 않았습니다</div>
       </div>
     </div>
   {/if}

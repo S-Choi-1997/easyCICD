@@ -17,7 +17,7 @@
 
     try {
       const response = await fetch(`${API_BASE}/projects`);
-      if (!response.ok) throw new Error('Failed to fetch projects');
+      if (!response.ok) throw new Error('프로젝트 목록을 가져올 수 없습니다');
       projects = await response.json();
     } catch (err) {
       error = err.message;
@@ -31,18 +31,18 @@
       const response = await fetch(`${API_BASE}/projects/${projectId}/builds`, {
         method: 'POST'
       });
-      if (!response.ok) throw new Error('Failed to trigger build');
+      if (!response.ok) throw new Error('빌드를 시작할 수 없습니다');
 
       const result = await response.json();
-      alert(`Build #${result.build_id} triggered successfully!`);
+      alert(`빌드 #${result.build_id}가 시작되었습니다!`);
       setTimeout(() => loadProjects(), 1000);
     } catch (err) {
-      alert('Failed to trigger build: ' + err.message);
+      alert('빌드 시작 실패: ' + err.message);
     }
   }
 
   async function deleteProject(projectId, projectName) {
-    if (!confirm(`Are you sure you want to delete project "${projectName}"?`)) {
+    if (!confirm(`"${projectName}" 프로젝트를 정말 삭제하시겠습니까?`)) {
       return;
     }
 
@@ -50,12 +50,12 @@
       const response = await fetch(`${API_BASE}/projects/${projectId}`, {
         method: 'DELETE'
       });
-      if (!response.ok) throw new Error('Failed to delete project');
+      if (!response.ok) throw new Error('프로젝트를 삭제할 수 없습니다');
 
-      alert('Project deleted successfully!');
+      alert('프로젝트가 삭제되었습니다!');
       loadProjects();
     } catch (err) {
-      alert('Failed to delete project: ' + err.message);
+      alert('프로젝트 삭제 실패: ' + err.message);
     }
   }
 
@@ -68,17 +68,17 @@
 
   function getStatusText(project) {
     if (project.blue_container_id || project.green_container_id) {
-      return 'Running';
+      return '실행 중';
     }
-    return 'Not Deployed';
+    return '배포 안됨';
   }
 </script>
 
 <header>
   <div class="header-content">
-    <h1>Lightweight CI/CD</h1>
+    <h1>Easy CI/CD</h1>
     <div class="header-actions">
-      <a href="/setup" use:link class="btn btn-primary">+ New Project</a>
+      <a href="/setup" use:link class="btn btn-primary">+ 새 프로젝트</a>
     </div>
   </div>
 </header>
@@ -86,24 +86,24 @@
 <div class="container">
   <div class="card">
     <div class="card-header">
-      <h2 class="card-title">Projects</h2>
+      <h2 class="card-title">프로젝트 목록</h2>
     </div>
 
     {#if loading}
       <div class="loading">
         <div class="spinner"></div>
-        <p>Loading projects...</p>
+        <p>프로젝트 불러오는 중...</p>
       </div>
     {:else if error}
       <div class="empty-state">
-        <h3>Error loading projects</h3>
+        <h3>프로젝트 로딩 오류</h3>
         <p>{error}</p>
       </div>
     {:else if projects.length === 0}
       <div class="empty-state">
-        <h3>No projects yet</h3>
-        <p>Create your first project to get started</p>
-        <a href="/setup" use:link class="btn btn-primary mt-2">+ New Project</a>
+        <h3>프로젝트가 없습니다</h3>
+        <p>첫 번째 프로젝트를 만들어보세요</p>
+        <a href="/setup" use:link class="btn btn-primary mt-2">+ 새 프로젝트</a>
       </div>
     {:else}
       {#each projects as project}
@@ -111,8 +111,8 @@
           <div class="project-header">
             <div>
               <div class="project-name">{project.name}</div>
-              <a href="http://localhost:8080/{project.name}/" target="_blank" class="project-url">
-                http://localhost:8080/{project.name}/
+              <a href="http://localhost:9999/{project.name}/" target="_blank" class="project-url">
+                http://localhost:9999/{project.name}/
               </a>
             </div>
             <span class="status-badge status-{getStatusClass(project)}">
@@ -122,18 +122,18 @@
           </div>
 
           <div class="project-info">
-            <div><strong>Repo:</strong> {project.repo}</div>
-            <div><strong>Branch:</strong> {project.branch}</div>
-            <div><strong>Active Slot:</strong> {project.active_slot}</div>
+            <div><strong>레포지토리:</strong> {project.repo}</div>
+            <div><strong>브랜치:</strong> {project.branch}</div>
+            <div><strong>활성 슬롯:</strong> {project.active_slot}</div>
           </div>
 
           <div class="project-actions">
-            <a href="/build/{project.id}" use:link class="btn btn-secondary btn-sm">View Builds</a>
+            <a href="/build/{project.id}" use:link class="btn btn-secondary btn-sm">빌드 내역</a>
             <button on:click={() => triggerBuild(project.id)} class="btn btn-primary btn-sm">
-              Trigger Build
+              빌드 시작
             </button>
             <button on:click={() => deleteProject(project.id, project.name)} class="btn btn-danger btn-sm">
-              Delete
+              삭제
             </button>
           </div>
         </div>
