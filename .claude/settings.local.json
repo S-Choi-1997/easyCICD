@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat:*)",
+      "Bash(cargo check:*)",
+      "Bash(docker build:*)",
+      "Bash(docker info:*)",
+      "Bash(docker system info:*)",
+      "Bash(grep:*)",
+      "Bash(docker tag:*)",
+      "Bash(docker push:*)"
+    ]
+  }
+}

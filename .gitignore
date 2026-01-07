@@ -1,0 +1,23 @@
+# Rust
+/agent/target/
+/agent/Cargo.lock
+
+# Data directories
+/data/
+
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
