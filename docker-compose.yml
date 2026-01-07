@@ -2,9 +2,7 @@ version: '3.8'
 
 services:
   agent:
-    build:
-      context: ./agent
-      dockerfile: Dockerfile
+    image: choho97/lightweight-ci:latest
     container_name: easycicd-agent
     restart: unless-stopped
 
