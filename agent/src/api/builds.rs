@@ -13,7 +13,7 @@ use crate::state::AppState;
 pub fn builds_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(list_builds))
-        .route("/:id", get(get_build))
+        .route("/{id}", get(get_build))
 }
 
 #[derive(Deserialize)]

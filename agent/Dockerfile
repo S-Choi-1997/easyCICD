@@ -26,7 +26,7 @@ COPY migrations ./migrations
 RUN touch src/main.rs && cargo build --release
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 WORKDIR /app
 
@@ -44,16 +44,12 @@ COPY --from=builder /build/target/release/lightweight-ci /app/
 COPY --from=builder /build/migrations /app/migrations
 
 # Create data directories
-RUN mkdir -p /data/db /data/logs /data/workspace /data/output /data/cache
+RUN mkdir -p /data/easycicd
 
 # Expose ports
 # 3000: API + WebSocket
 # 8080: Reverse Proxy
 EXPOSE 3000 8080
-
-# Set environment variables
-ENV DATABASE_URL=sqlite:///data/db/ci.db
-ENV RUST_LOG=lightweight_ci=info,tower_http=debug
 
 # Run the binary
 CMD ["/app/lightweight-ci"]

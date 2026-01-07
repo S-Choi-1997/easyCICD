@@ -1,4 +1,5 @@
-use sqlx::SqlitePool;
+use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
+use std::str::FromStr;
 use crate::db::models::*;
 
 #[derive(Clone)]
@@ -8,7 +9,9 @@ pub struct Database {
 
 impl Database {
     pub async fn connect(database_url: &str) -> Result<Self, sqlx::Error> {
-        let pool = SqlitePool::connect(database_url).await?;
+        let options = SqliteConnectOptions::from_str(database_url)?
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(options).await?;
         Ok(Self { pool })
     }
 
@@ -29,9 +32,9 @@ impl Database {
             .fetch_one(&self.pool)
             .await?;
 
-        let base_port = 9999;
-        let blue_port = base_port + (next_id as i32 * 2);
-        let green_port = base_port + (next_id as i32 * 2) + 1;
+        let base_port = 10000;
+        let blue_port = base_port + (next_id as i32 * 2) - 2;
+        let green_port = base_port + (next_id as i32 * 2) - 1;
 
         let result = sqlx::query(
             r#"
@@ -133,7 +136,7 @@ impl Database {
 
         // Get project to determine log path
         let project = self.get_project_by_id(build.project_id).await?;
-        let log_path = format!("/data/logs/{}/{}.log", project.name, build_number);
+        let log_path = format!("/data/easycicd/logs/{}/{}.log", project.name, build_number);
 
         let result = sqlx::query(
             r#"

@@ -17,8 +17,8 @@ use crate::state::AppState;
 pub fn projects_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(list_projects).post(create_project))
-        .route("/:id", get(get_project).delete(delete_project))
-        .route("/:id/builds", post(trigger_build))
+        .route("/{id}", get(get_project).delete(delete_project))
+        .route("/{id}/builds", post(trigger_build))
 }
 
 async fn list_projects(State(state): State<AppState>) -> impl IntoResponse {

@@ -33,8 +33,12 @@ async fn main() -> Result<()> {
 
     info!("Starting Easy CI/CD Agent");
 
+    // Create data directory structure
+    std::fs::create_dir_all("/data/easycicd")?;
+    info!("Data directory initialized");
+
     // Initialize database
-    let database_url = "sqlite:///data/db.sqlite";
+    let database_url = "sqlite:///data/easycicd/db.sqlite";
     info!("Connecting to database: {}", database_url);
     let db = Database::connect(database_url).await?;
 
@@ -63,8 +67,8 @@ async fn main() -> Result<()> {
         .route("/webhook/github", post(github_webhook))
         .route("/ws", get(ws_handler))
         .nest("/api", api_routes())
-        // Serve static files from /frontend directory
-        .nest_service("/", ServeDir::new("../frontend"))
+        // Serve static files from /app/frontend directory
+        .fallback_service(ServeDir::new("frontend"))
         .with_state(state.clone());
 
     // Start API server (port 3000)

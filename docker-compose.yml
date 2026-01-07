@@ -26,8 +26,8 @@ services:
       - ./frontend:/app/frontend
 
     ports:
-      - "3000:3000"  # API + WebSocket + Web UI
-      - "8080:8080"  # Reverse Proxy (service access)
+      - "10000:3000"  # API + WebSocket + Web UI
+      - "9999:8080"   # Reverse Proxy (service access)
 
     networks:
       - easycicd
