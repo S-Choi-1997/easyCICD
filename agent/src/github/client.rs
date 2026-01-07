@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow};
 use reqwest::Client;
 use super::models::*;
 
+#[derive(Debug, Clone)]
 pub struct GitHubClient {
     client: Client,
     token: String,

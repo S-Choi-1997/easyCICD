@@ -28,7 +28,11 @@
       "Bash(npm --version:*)",
       "Bash(npm install:*)",
       "Bash(npm run build:*)",
-      "Bash(test:*)"
+      "Bash(test:*)",
+      "Bash(git commit:*)",
+      "Bash(docker-compose logs:*)",
+      "Bash(chmod:*)",
+      "Bash(docker-compose down:*)"
     ]
   }
 }

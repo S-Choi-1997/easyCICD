@@ -23,4 +23,5 @@ pub fn api_routes() -> Router<AppState> {
         .route("/github/repositories", get(github_api::list_repositories))
         .route("/github/branches", get(github_api::list_branches))
         .route("/github/folders", get(github_api::list_folders))
+        .route("/github/detect-project", get(github_api::detect_project))
 }

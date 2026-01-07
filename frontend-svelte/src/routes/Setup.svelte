@@ -1,609 +1,578 @@
 <script>
-  import { push } from 'svelte-spa-router';
-  import { link } from 'svelte-spa-router';
-  import { onMount } from 'svelte';
+    import { onMount } from 'svelte';
+    import { push } from 'svelte-spa-router';
 
-  const API_BASE = '/api';
+    const API_BASE = '/api';
 
-  let formData = {
-    name: '',
-    repo: '',
-    branch: 'main',
-    path_filter: '**',
-    build_image: '',
-    cache_type: 'gradle',
-    build_command: '',
-    runtime_image: '',
-    runtime_command: '',
-    health_check_url: '/',
-  };
+    // GitHub PAT
+    let githubPAT = '';
+    let patConfigured = false;
+    let githubUsername = '';
 
-  let submitting = false;
+    // Project settings
+    let projectName = '';
+    let selectedRepo = '';
+    let selectedBranch = '';
+    let pathFilter = '';
 
-  // GitHub PAT 상태
-  let githubPAT = '';
-  let patConfigured = false;
-  let githubUsername = '';
-  let showPATInput = false;
+    // Data from API
+    let repositories = [];
+    let branches = [];
 
-  // 레포지토리 관련
-  let repositories = [];
-  let branches = [];
-  let loadingRepos = false;
-  let loadingBranches = false;
-  let showRepoDropdown = false;
-  let showBranchDropdown = false;
+    // Auto-detected configuration
+    let detectedConfig = null;
+    let showAdvanced = false;
 
-  // 빌드/런타임 이미지 프리셋
-  const buildImagePresets = [
-    { value: 'gradle:jdk17', label: 'Gradle + JDK 17' },
-    { value: 'gradle:jdk21', label: 'Gradle + JDK 21' },
-    { value: 'maven:3-openjdk-17', label: 'Maven + JDK 17' },
-    { value: 'node:20', label: 'Node.js 20' },
-    { value: 'node:22', label: 'Node.js 22' },
-    { value: 'python:3.11', label: 'Python 3.11' },
-    { value: 'python:3.12', label: 'Python 3.12' },
-    { value: 'rust:latest', label: 'Rust' },
-    { value: 'golang:1.22', label: 'Go 1.22' },
-  ];
+    // Manual overrides (when user wants to customize)
+    let manualConfig = {
+        build_image: '',
+        build_command: '',
+        cache_type: '',
+        runtime_image: '',
+        runtime_command: '',
+        health_check_url: ''
+    };
 
-  const runtimeImagePresets = [
-    { value: 'eclipse-temurin:17-jre', label: 'JRE 17' },
-    { value: 'eclipse-temurin:21-jre', label: 'JRE 21' },
-    { value: 'node:20-slim', label: 'Node.js 20 Slim' },
-    { value: 'python:3.11-slim', label: 'Python 3.11 Slim' },
-    { value: 'nginx:alpine', label: 'Nginx Alpine' },
-    { value: 'debian:trixie-slim', label: 'Debian Trixie' },
-  ];
+    onMount(async () => {
+        await checkPATStatus();
+        if (patConfigured) {
+            await loadRepositories();
+        }
+    });
 
-  onMount(async () => {
-    await checkPATStatus();
-  });
-
-  async function checkPATStatus() {
-    try {
-      const response = await fetch(`${API_BASE}/settings/github-pat-status`);
-      const data = await response.json();
-      patConfigured = data.configured;
-      if (data.github_username) {
-        githubUsername = data.github_username;
-      }
-    } catch (err) {
-      console.error('Failed to check PAT status:', err);
-    }
-  }
-
-  async function savePAT() {
-    if (!githubPAT.trim()) {
-      alert('GitHub PAT을 입력해주세요');
-      return;
+    async function checkPATStatus() {
+        try {
+            const response = await fetch(`${API_BASE}/settings/github-pat-status`);
+            const data = await response.json();
+            patConfigured = data.configured || false;
+            githubUsername = data.github_username || '';
+        } catch (error) {
+            console.error('PAT 상태 확인 실패:', error);
+        }
     }
 
-    try {
-      const response = await fetch(`${API_BASE}/settings/github-pat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ github_pat: githubPAT }),
-      });
+    async function savePAT() {
+        if (!githubPAT.trim()) {
+            alert('GitHub PAT을 입력하세요.');
+            return;
+        }
 
-      const data = await response.json();
+        try {
+            const response = await fetch(`${API_BASE}/settings/github-pat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ github_pat: githubPAT }),
+            });
 
-      if (response.ok) {
-        patConfigured = true;
-        githubUsername = data.github_username;
-        showPATInput = false;
-        alert(`GitHub 계정 연결 성공: ${data.github_username}`);
-      } else {
-        alert(`오류: ${data.error}`);
-      }
-    } catch (err) {
-      alert(`PAT 저장 실패: ${err.message}`);
-    }
-  }
+            const data = await response.json();
 
-  async function loadRepositories() {
-    if (!patConfigured) {
-      alert('먼저 GitHub PAT을 설정해주세요');
-      showPATInput = true;
-      return;
-    }
-
-    loadingRepos = true;
-    try {
-      const response = await fetch(`${API_BASE}/github/repositories`);
-      const data = await response.json();
-
-      if (response.ok) {
-        repositories = data.repositories;
-        showRepoDropdown = true;
-      } else {
-        alert(`레포지토리 로딩 실패: ${data.error}`);
-      }
-    } catch (err) {
-      alert(`레포지토리 로딩 실패: ${err.message}`);
-    } finally {
-      loadingRepos = false;
-    }
-  }
-
-  async function selectRepository(repo) {
-    formData.repo = repo.full_name;
-    formData.branch = repo.default_branch;
-    showRepoDropdown = false;
-
-    // 브랜치 목록 자동 로딩
-    await loadBranches(repo.full_name);
-  }
-
-  async function loadBranches(repoFullName) {
-    if (!repoFullName) {
-      repoFullName = formData.repo;
+            if (response.ok) {
+                patConfigured = true;
+                githubUsername = data.github_username;
+                alert(`PAT 저장 완료! (${githubUsername})`);
+                await loadRepositories();
+            } else {
+                alert(`PAT 저장 실패: ${data.error}`);
+            }
+        } catch (error) {
+            alert('PAT 저장 중 오류 발생');
+            console.error(error);
+        }
     }
 
-    if (!repoFullName) {
-      alert('레포지토리를 먼저 선택해주세요');
-      return;
+    async function loadRepositories() {
+        try {
+            const response = await fetch(`${API_BASE}/github/repositories`);
+            const data = await response.json();
+            repositories = data.repositories || [];
+        } catch (error) {
+            console.error('레포지토리 로드 실패:', error);
+        }
     }
 
-    const [owner, repo] = repoFullName.split('/');
+    async function onRepoChange() {
+        if (!selectedRepo) return;
 
-    loadingBranches = true;
-    try {
-      const response = await fetch(
-        `${API_BASE}/github/branches?owner=${owner}&repo=${repo}`
-      );
-      const data = await response.json();
+        const [owner, repo] = selectedRepo.split('/');
+        try {
+            const response = await fetch(
+                `${API_BASE}/github/branches?owner=${owner}&repo=${repo}`
+            );
+            const data = await response.json();
+            branches = data.branches || [];
 
-      if (response.ok) {
-        branches = data.branches;
-        showBranchDropdown = true;
-      } else {
-        alert(`브랜치 로딩 실패: ${data.error}`);
-      }
-    } catch (err) {
-      alert(`브랜치 로딩 실패: ${err.message}`);
-    } finally {
-      loadingBranches = false;
+            // Reset selections
+            selectedBranch = '';
+            detectedConfig = null;
+        } catch (error) {
+            console.error('브랜치 로드 실패:', error);
+        }
     }
-  }
 
-  function selectBranch(branch) {
-    formData.branch = branch.name;
-    showBranchDropdown = false;
-  }
+    async function onBranchChange() {
+        if (!selectedRepo || !selectedBranch) return;
 
-  async function handleSubmit() {
-    submitting = true;
-
-    try {
-      const response = await fetch(`${API_BASE}/projects`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(formData),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || '프로젝트 생성 실패');
-      }
-
-      const project = await response.json();
-      alert(`"${project.name}" 프로젝트가 생성되었습니다!`);
-      push('/');
-    } catch (error) {
-      alert('프로젝트 생성 실패: ' + error.message);
-    } finally {
-      submitting = false;
+        // Auto-detect project configuration
+        await detectProject();
     }
-  }
+
+    async function detectProject() {
+        if (!selectedRepo || !selectedBranch) {
+            alert('레포지토리와 브랜치를 선택하세요.');
+            return;
+        }
+
+        const [owner, repo] = selectedRepo.split('/');
+
+        try {
+            const params = new URLSearchParams({
+                owner,
+                repo,
+                branch: selectedBranch,
+            });
+
+            if (pathFilter) {
+                params.append('path_filter', pathFilter);
+            }
+
+            const response = await fetch(`${API_BASE}/github/detect-project?${params}`);
+            const data = await response.json();
+
+            if (response.ok) {
+                detectedConfig = data;
+                // Initialize manual config with detected values
+                manualConfig = { ...data };
+                alert(`프로젝트 타입 감지 완료: ${data.project_type}`);
+            } else {
+                alert(`자동 감지 실패: ${data.error}\n수동으로 설정하세요.`);
+                showAdvanced = true;
+            }
+        } catch (error) {
+            console.error('프로젝트 감지 실패:', error);
+            alert('프로젝트 감지 중 오류 발생');
+        }
+    }
+
+    async function registerProject() {
+        if (!projectName.trim()) {
+            alert('프로젝트 이름을 입력하세요.');
+            return;
+        }
+
+        if (!selectedRepo || !selectedBranch) {
+            alert('레포지토리와 브랜치를 선택하세요.');
+            return;
+        }
+
+        if (!detectedConfig && !showAdvanced) {
+            alert('먼저 자동 감지를 실행하세요.');
+            return;
+        }
+
+        const config = showAdvanced ? manualConfig : detectedConfig;
+
+        const projectData = {
+            name: projectName,
+            repo: `https://github.com/${selectedRepo}.git`,
+            path_filter: pathFilter || '*',
+            branch: selectedBranch,
+            build_image: config.build_image,
+            build_command: config.build_command,
+            cache_type: config.cache_type,
+            runtime_image: config.runtime_image,
+            runtime_command: config.runtime_command,
+            health_check_url: config.health_check_url,
+        };
+
+        try {
+            const response = await fetch(`${API_BASE}/projects`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(projectData),
+            });
+
+            if (response.ok) {
+                alert('프로젝트 등록 완료!');
+                push('/');
+            } else {
+                const data = await response.json();
+                alert(`프로젝트 등록 실패: ${data.error || '알 수 없는 오류'}`);
+            }
+        } catch (error) {
+            alert('프로젝트 등록 중 오류 발생');
+            console.error(error);
+        }
+    }
 </script>
 
-<header>
-  <div class="header-content">
-    <h1>Easy CI/CD</h1>
-    <div class="header-actions">
-      <a href="/" use:link class="btn btn-secondary">← 대시보드로 돌아가기</a>
-    </div>
-  </div>
-</header>
-
 <div class="container">
-  <!-- GitHub PAT 설정 -->
-  <div class="card">
-    <div class="card-header">
-      <h2 class="card-title">GitHub 연동 설정</h2>
-    </div>
+    <h1>프로젝트 등록</h1>
+
+    <!-- GitHub PAT Section -->
+    <section class="pat-section">
+        <h2>GitHub 연동</h2>
+        {#if patConfigured}
+            <div class="status-badge connected">
+                ✓ 연결됨 ({githubUsername})
+            </div>
+        {:else}
+            <div class="status-badge disconnected">
+                × 연결 안됨
+            </div>
+            <div class="input-group">
+                <input
+                    type="password"
+                    bind:value={githubPAT}
+                    placeholder="GitHub Personal Access Token"
+                    class="input-full"
+                />
+                <button on:click={savePAT} class="btn-primary">PAT 저장</button>
+            </div>
+            <p class="help-text">
+                <a href="https://github.com/settings/tokens/new?scopes=repo,read:user" target="_blank">
+                    GitHub PAT 생성하기 →
+                </a>
+            </p>
+        {/if}
+    </section>
 
     {#if patConfigured}
-      <div class="pat-status">
-        <span class="status-badge status-running">
-          <span class="status-dot"></span>
-          연결됨: {githubUsername}
-        </span>
-        <button
-          on:click={() => (showPATInput = !showPATInput)}
-          class="btn btn-secondary btn-sm"
-        >
-          {showPATInput ? '취소' : 'PAT 변경'}
-        </button>
-      </div>
-    {:else}
-      <div class="pat-status">
-        <span class="status-badge status-failed">
-          <span class="status-dot"></span>
-          미연결
-        </span>
-        <button on:click={() => (showPATInput = true)} class="btn btn-primary btn-sm">
-          GitHub PAT 설정
-        </button>
-      </div>
-    {/if}
+        <!-- Project Setup Section -->
+        <section class="project-section">
+            <h2>프로젝트 설정</h2>
 
-    {#if showPATInput}
-      <div class="form-group">
-        <label class="form-label" for="github_pat">GitHub Personal Access Token</label>
-        <input
-          type="password"
-          id="github_pat"
-          class="form-input"
-          bind:value={githubPAT}
-          placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-        />
-        <div class="form-help">
-          <a
-            href="https://github.com/settings/tokens/new"
-            target="_blank"
-            style="color: var(--primary); text-decoration: underline;"
-          >
-            GitHub에서 PAT 생성하기
-          </a>
-          (권한: repo, admin:repo_hook)
-        </div>
-        <button on:click={savePAT} class="btn btn-primary">저장</button>
-      </div>
-    {/if}
-  </div>
-
-  <!-- 프로젝트 생성 폼 -->
-  <div class="card">
-    <div class="card-header">
-      <h2 class="card-title">새 프로젝트 만들기</h2>
-    </div>
-
-    <form on:submit|preventDefault={handleSubmit}>
-      <!-- 프로젝트 정보 -->
-      <div class="form-group">
-        <label class="form-label" for="name">프로젝트 이름</label>
-        <input
-          type="text"
-          id="name"
-          class="form-input"
-          bind:value={formData.name}
-          required
-          pattern="[a-z0-9-]+"
-          placeholder="my-backend"
-        />
-        <div class="form-help">소문자, 숫자, 하이픈(-)만 사용 가능</div>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label" for="repo">GitHub 레포지토리</label>
-        <div class="input-with-button">
-          <input
-            type="text"
-            id="repo"
-            class="form-input"
-            bind:value={formData.repo}
-            required
-            placeholder="username/repository"
-          />
-          <button
-            type="button"
-            on:click={loadRepositories}
-            class="btn btn-primary btn-sm"
-            disabled={loadingRepos}
-          >
-            {loadingRepos ? '로딩 중...' : '레포 선택'}
-          </button>
-        </div>
-        <div class="form-help">형식: username/repository</div>
-
-        {#if showRepoDropdown && repositories.length > 0}
-          <div class="dropdown">
-            <div class="dropdown-header">
-              <span>레포지토리 선택 ({repositories.length}개)</span>
-              <button type="button" on:click={() => (showRepoDropdown = false)} class="close-btn">
-                ✕
-              </button>
+            <!-- Project Name -->
+            <div class="form-group">
+                <label>프로젝트 이름</label>
+                <input
+                    type="text"
+                    bind:value={projectName}
+                    placeholder="my-awesome-app"
+                    class="input-short"
+                />
             </div>
-            <ul class="dropdown-list">
-              {#each repositories as repo}
-                <li on:click={() => selectRepository(repo)} class="dropdown-item">
-                  <div>
-                    <strong>{repo.name}</strong>
-                    <span class="text-muted text-sm">{repo.full_name}</span>
-                  </div>
-                  <span class="text-muted text-xs">
-                    {repo.private ? '🔒 Private' : '🌐 Public'}
-                  </span>
-                </li>
-              {/each}
-            </ul>
-          </div>
-        {/if}
-      </div>
 
-      <div class="form-group">
-        <label class="form-label" for="branch">브랜치</label>
-        <div class="input-with-button">
-          <input
-            type="text"
-            id="branch"
-            class="form-input"
-            bind:value={formData.branch}
-            required
-          />
-          <button
-            type="button"
-            on:click={() => loadBranches()}
-            class="btn btn-primary btn-sm"
-            disabled={loadingBranches || !formData.repo}
-          >
-            {loadingBranches ? '로딩 중...' : '브랜치 선택'}
-          </button>
-        </div>
-
-        {#if showBranchDropdown && branches.length > 0}
-          <div class="dropdown">
-            <div class="dropdown-header">
-              <span>브랜치 선택 ({branches.length}개)</span>
-              <button type="button" on:click={() => (showBranchDropdown = false)} class="close-btn">
-                ✕
-              </button>
+            <!-- Repository Selection -->
+            <div class="form-group">
+                <label>레포지토리</label>
+                <select bind:value={selectedRepo} on:change={onRepoChange} class="select-full">
+                    <option value="">레포지토리 선택...</option>
+                    {#each repositories as repo}
+                        <option value={repo.full_name}>
+                            {repo.full_name} {repo.private ? '🔒' : ''}
+                        </option>
+                    {/each}
+                </select>
             </div>
-            <ul class="dropdown-list">
-              {#each branches as branch}
-                <li on:click={() => selectBranch(branch)} class="dropdown-item">
-                  <div>
-                    <strong>{branch.name}</strong>
-                    {#if branch.protected}
-                      <span class="text-muted text-xs">🔒 Protected</span>
-                    {/if}
-                  </div>
-                </li>
-              {/each}
-            </ul>
-          </div>
-        {/if}
-      </div>
 
-      <div class="form-group">
-        <label class="form-label" for="path_filter">경로 필터</label>
-        <input
-          type="text"
-          id="path_filter"
-          class="form-input"
-          bind:value={formData.path_filter}
-        />
-        <div class="form-help">모든 파일은 **, 특정 경로는 src/**,tests/** 형식으로 입력</div>
-      </div>
+            <!-- Branch Selection -->
+            {#if branches.length > 0}
+                <div class="form-group">
+                    <label>브랜치</label>
+                    <select bind:value={selectedBranch} on:change={onBranchChange} class="select-medium">
+                        <option value="">브랜치 선택...</option>
+                        {#each branches as branch}
+                            <option value={branch.name}>
+                                {branch.name} {branch.protected ? '🛡️' : ''}
+                            </option>
+                        {/each}
+                    </select>
+                </div>
+            {/if}
 
-      <!-- 빌드 설정 -->
-      <h3 class="mt-2 mb-2">빌드 설정</h3>
+            <!-- Path Filter (Optional) -->
+            <div class="form-group">
+                <label>경로 필터 (선택사항)</label>
+                <input
+                    type="text"
+                    bind:value={pathFilter}
+                    placeholder="backend/ 또는 frontend/ (모노레포용)"
+                    class="input-medium"
+                />
+                <p class="help-text">비워두면 전체 레포지토리 대상</p>
+            </div>
 
-      <div class="form-group">
-        <label class="form-label" for="build_image">빌드 이미지</label>
-        <div class="preset-selector">
-          {#each buildImagePresets as preset}
-            <button
-              type="button"
-              class="preset-btn {formData.build_image === preset.value ? 'active' : ''}"
-              on:click={() => (formData.build_image = preset.value)}
-            >
-              {preset.label}
-            </button>
-          {/each}
-        </div>
-        <input
-          type="text"
-          id="build_image"
-          class="form-input"
-          bind:value={formData.build_image}
-          required
-          placeholder="또는 직접 입력"
-        />
-      </div>
+            <!-- Auto-detect Button -->
+            {#if selectedRepo && selectedBranch}
+                <button on:click={detectProject} class="btn-detect">
+                    🔍 자동 감지
+                </button>
+            {/if}
 
-      <div class="form-group">
-        <label class="form-label" for="cache_type">캐시 타입</label>
-        <select id="cache_type" class="form-select" bind:value={formData.cache_type} required>
-          <option value="gradle">Gradle</option>
-          <option value="maven">Maven</option>
-          <option value="npm">NPM</option>
-          <option value="pip">Pip</option>
-          <option value="cargo">Cargo</option>
-          <option value="none">없음</option>
-        </select>
-      </div>
+            <!-- Detected Configuration Display -->
+            {#if detectedConfig}
+                <div class="detected-config">
+                    <h3>✓ 감지된 설정</h3>
+                    <div class="config-item">
+                        <strong>프로젝트 타입:</strong> {detectedConfig.project_type}
+                    </div>
+                    <div class="config-item">
+                        <strong>빌드 이미지:</strong> {detectedConfig.build_image}
+                    </div>
+                    <div class="config-item">
+                        <strong>빌드 명령어:</strong> {detectedConfig.build_command}
+                    </div>
+                    <div class="config-item">
+                        <strong>실행 이미지:</strong> {detectedConfig.runtime_image}
+                    </div>
 
-      <div class="form-group">
-        <label class="form-label" for="build_command">빌드 명령어</label>
-        <textarea
-          id="build_command"
-          class="form-textarea"
-          bind:value={formData.build_command}
-          required
-          placeholder="./gradlew clean bootJar && cp build/libs/*.jar /output/app.jar"
-        ></textarea>
-        <div class="form-help">프로젝트 빌드 명령어. 결과물은 /output/ 폴더에 복사해야 합니다</div>
-      </div>
+                    <button on:click={() => showAdvanced = !showAdvanced} class="btn-toggle">
+                        {showAdvanced ? '▼ 고급 설정 숨기기' : '▶ 고급 설정 보기'}
+                    </button>
+                </div>
+            {/if}
 
-      <!-- 실행 설정 -->
-      <h3 class="mt-2 mb-2">실행 설정</h3>
+            <!-- Advanced Settings -->
+            {#if showAdvanced}
+                <div class="advanced-section">
+                    <h3>고급 설정 (수동 조정)</h3>
 
-      <div class="form-group">
-        <label class="form-label" for="runtime_image">런타임 이미지</label>
-        <div class="preset-selector">
-          {#each runtimeImagePresets as preset}
-            <button
-              type="button"
-              class="preset-btn {formData.runtime_image === preset.value ? 'active' : ''}"
-              on:click={() => (formData.runtime_image = preset.value)}
-            >
-              {preset.label}
-            </button>
-          {/each}
-        </div>
-        <input
-          type="text"
-          id="runtime_image"
-          class="form-input"
-          bind:value={formData.runtime_image}
-          required
-          placeholder="또는 직접 입력"
-        />
-      </div>
+                    <div class="form-group">
+                        <label>빌드 이미지</label>
+                        <input type="text" bind:value={manualConfig.build_image} class="input-full" />
+                    </div>
 
-      <div class="form-group">
-        <label class="form-label" for="runtime_command">실행 명령어</label>
-        <input
-          type="text"
-          id="runtime_command"
-          class="form-input"
-          bind:value={formData.runtime_command}
-          required
-          placeholder="java -jar /app/app.jar"
-        />
-        <div class="form-help">애플리케이션 시작 명령어</div>
-      </div>
+                    <div class="form-group">
+                        <label>빌드 명령어</label>
+                        <input type="text" bind:value={manualConfig.build_command} class="input-full" />
+                    </div>
 
-      <div class="form-group">
-        <label class="form-label" for="health_check_url">헬스체크 URL</label>
-        <input
-          type="text"
-          id="health_check_url"
-          class="form-input"
-          bind:value={formData.health_check_url}
-          required
-          placeholder="/actuator/health"
-        />
-        <div class="form-help">헬스체크 경로 (예: /health, /actuator/health)</div>
-      </div>
+                    <div class="form-group">
+                        <label>캐시 타입</label>
+                        <select bind:value={manualConfig.cache_type} class="select-short">
+                            <option value="none">없음</option>
+                            <option value="gradle">Gradle</option>
+                            <option value="maven">Maven</option>
+                            <option value="npm">npm</option>
+                            <option value="pip">pip</option>
+                            <option value="rust">Rust</option>
+                            <option value="go">Go</option>
+                        </select>
+                    </div>
 
-      <div class="form-group">
-        <button type="submit" class="btn btn-primary" disabled={submitting}>
-          {submitting ? '생성 중...' : '프로젝트 생성'}
-        </button>
-        <a href="/" use:link class="btn btn-secondary">취소</a>
-      </div>
-    </form>
-  </div>
+                    <div class="form-group">
+                        <label>실행 이미지</label>
+                        <input type="text" bind:value={manualConfig.runtime_image} class="input-full" />
+                    </div>
+
+                    <div class="form-group">
+                        <label>실행 명령어</label>
+                        <input type="text" bind:value={manualConfig.runtime_command} class="input-full" />
+                    </div>
+
+                    <div class="form-group">
+                        <label>헬스체크 URL</label>
+                        <input type="text" bind:value={manualConfig.health_check_url} class="input-short" />
+                    </div>
+                </div>
+            {/if}
+
+            <!-- Register Button -->
+            {#if detectedConfig || showAdvanced}
+                <div class="actions">
+                    <button on:click={registerProject} class="btn-success">
+                        프로젝트 등록
+                    </button>
+                    <button on:click={() => push('/')} class="btn-secondary">
+                        취소
+                    </button>
+                </div>
+            {/if}
+        </section>
+    {/if}
 </div>
 
 <style>
-  .pat-status {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    padding: 1rem;
-    background: var(--gray-50);
-    border-radius: 0.5rem;
-    margin-bottom: 1rem;
-  }
+    .container {
+        max-width: 800px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+    }
 
-  .input-with-button {
-    display: flex;
-    gap: 0.5rem;
-  }
+    h1 {
+        font-size: 2rem;
+        margin-bottom: 2rem;
+        color: var(--gray-900);
+    }
 
-  .input-with-button .form-input {
-    flex: 1;
-  }
+    h2 {
+        font-size: 1.5rem;
+        margin-bottom: 1rem;
+        color: var(--gray-800);
+    }
 
-  .dropdown {
-    margin-top: 0.5rem;
-    border: 1px solid var(--gray-300);
-    border-radius: 0.5rem;
-    background: white;
-    max-height: 300px;
-    overflow-y: auto;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-  }
+    h3 {
+        font-size: 1.25rem;
+        margin-bottom: 1rem;
+        color: var(--gray-700);
+    }
 
-  .dropdown-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 0.75rem 1rem;
-    border-bottom: 1px solid var(--gray-200);
-    background: var(--gray-50);
-    font-weight: 600;
-  }
+    section {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        margin-bottom: 2rem;
+    }
 
-  .close-btn {
-    background: none;
-    border: none;
-    font-size: 1.25rem;
-    cursor: pointer;
-    color: var(--gray-600);
-    padding: 0;
-    line-height: 1;
-  }
+    .status-badge {
+        display: inline-block;
+        padding: 0.5rem 1rem;
+        border-radius: 0.375rem;
+        font-weight: 500;
+        margin-bottom: 1rem;
+    }
 
-  .close-btn:hover {
-    color: var(--gray-900);
-  }
+    .status-badge.connected {
+        background: #d1fae5;
+        color: #065f46;
+    }
 
-  .dropdown-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-  }
+    .status-badge.disconnected {
+        background: #fee2e2;
+        color: #991b1b;
+    }
 
-  .dropdown-item {
-    padding: 0.75rem 1rem;
-    cursor: pointer;
-    border-bottom: 1px solid var(--gray-100);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
+    .form-group {
+        margin-bottom: 1.5rem;
+    }
 
-  .dropdown-item:last-child {
-    border-bottom: none;
-  }
+    label {
+        display: block;
+        font-weight: 500;
+        margin-bottom: 0.5rem;
+        color: var(--gray-700);
+    }
 
-  .dropdown-item:hover {
-    background: var(--gray-50);
-  }
+    input, select {
+        padding: 0.5rem;
+        border: 1px solid var(--gray-300);
+        border-radius: 0.375rem;
+        font-size: 1rem;
+    }
 
-  .preset-selector {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    margin-bottom: 0.5rem;
-  }
+    .input-full, .select-full {
+        width: 100%;
+    }
 
-  .preset-btn {
-    padding: 0.5rem 1rem;
-    border: 1px solid var(--gray-300);
-    border-radius: 0.375rem;
-    background: white;
-    cursor: pointer;
-    font-size: 0.875rem;
-    transition: all 0.2s;
-  }
+    .input-medium, .select-medium {
+        width: 60%;
+    }
 
-  .preset-btn:hover {
-    border-color: var(--primary);
-    background: var(--gray-50);
-  }
+    .input-short, .select-short {
+        width: 40%;
+    }
 
-  .preset-btn.active {
-    border-color: var(--primary);
-    background: var(--primary);
-    color: white;
-  }
+    .input-group {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+    }
+
+    .help-text {
+        font-size: 0.875rem;
+        color: var(--gray-600);
+        margin-top: 0.25rem;
+    }
+
+    .help-text a {
+        color: var(--primary);
+        text-decoration: none;
+    }
+
+    .help-text a:hover {
+        text-decoration: underline;
+    }
+
+    button {
+        padding: 0.5rem 1rem;
+        border: none;
+        border-radius: 0.375rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    .btn-primary {
+        background: var(--primary);
+        color: white;
+    }
+
+    .btn-primary:hover {
+        background: var(--primary-dark);
+    }
+
+    .btn-detect {
+        background: #3b82f6;
+        color: white;
+        font-size: 1.125rem;
+        padding: 0.75rem 1.5rem;
+        margin: 1rem 0;
+    }
+
+    .btn-detect:hover {
+        background: #2563eb;
+    }
+
+    .btn-toggle {
+        background: var(--gray-200);
+        color: var(--gray-700);
+        margin-top: 1rem;
+    }
+
+    .btn-toggle:hover {
+        background: var(--gray-300);
+    }
+
+    .btn-success {
+        background: #10b981;
+        color: white;
+        font-size: 1.125rem;
+        padding: 0.75rem 2rem;
+    }
+
+    .btn-success:hover {
+        background: #059669;
+    }
+
+    .btn-secondary {
+        background: var(--gray-300);
+        color: var(--gray-700);
+        padding: 0.75rem 2rem;
+    }
+
+    .btn-secondary:hover {
+        background: var(--gray-400);
+    }
+
+    .detected-config {
+        background: #f0fdf4;
+        border: 2px solid #10b981;
+        border-radius: 0.5rem;
+        padding: 1.5rem;
+        margin: 1.5rem 0;
+    }
+
+    .config-item {
+        padding: 0.5rem 0;
+        border-bottom: 1px solid #d1fae5;
+    }
+
+    .config-item:last-child {
+        border-bottom: none;
+    }
+
+    .advanced-section {
+        background: var(--gray-50);
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        margin-top: 1.5rem;
+    }
+
+    .actions {
+        display: flex;
+        gap: 1rem;
+        margin-top: 2rem;
+        justify-content: center;
+    }
 </style>

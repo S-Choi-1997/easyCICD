@@ -1,0 +1,201 @@
+================================================================================
+GitHub OAuth 통합 계획
+================================================================================
+작성일: 2026-01-07
+
+📋 목표
+--------------------------------------------------------------------------------
+- GitHub 소셜 로그인으로 사용자 인증
+- 사용자가 접근 가능한 레포지토리 자동 목록화
+- 드롭다운으로 레포지토리 선택 (URL 수동 입력 불필요)
+- GitHub Webhook 자동 생성 및 연결
+
+🔐 Phase 1: GitHub OAuth 인증
+--------------------------------------------------------------------------------
+[F] GitHub OAuth App 등록 (수동 작업)
+    - Settings → Developer settings → OAuth Apps
+    - Application name: Easy CI/CD
+    - Homepage URL: http://localhost:10000
+    - Authorization callback URL: http://localhost:10000/auth/github/callback
+    - Client ID, Client Secret 발급
+
+[F] OAuth 설정 저장 (DB)
+    - settings 테이블에 github_oauth_client_id, github_oauth_client_secret 저장
+    - 환경변수 대신 DB에 저장 (기존 방식 유지)
+    - API: GET/POST /api/settings/github-oauth
+
+[F] 백엔드: OAuth 플로우 구현
+    - GET /auth/github - GitHub 로그인 페이지로 리디렉션
+    - GET /auth/github/callback - GitHub에서 돌아올 때 처리
+    - OAuth 스코프: repo, admin:repo_hook (레포 접근 + Webhook 생성)
+    - Access Token 발급 및 저장
+
+[F] 사용자 세션 관리
+    - users 테이블 생성 (id, github_id, github_username, access_token, created_at)
+    - 세션 쿠키 또는 JWT 토큰 발급
+    - 로그인 상태 유지
+
+🗂️ Phase 2: 레포지토리 목록 가져오기
+--------------------------------------------------------------------------------
+[F] GitHub API 연동
+    - GET https://api.github.com/user/repos
+    - Authorization: Bearer {access_token}
+    - 파라미터: affiliation=owner,collaborator&sort=updated&per_page=100
+    - 사용자가 owner이거나 collaborator인 레포만 가져오기
+
+[F] 백엔드 API
+    - GET /api/github/repos
+    - 인증된 사용자의 access_token으로 GitHub API 호출
+    - 레포지토리 목록 반환 (name, full_name, clone_url, default_branch)
+    - 캐싱 (5분) - 매번 GitHub API 호출하지 않도록
+
+[F] 프론트엔드: 레포 선택 UI
+    - Setup 페이지에서 "GitHub에서 선택" 버튼
+    - 드롭다운 또는 검색 가능한 모달
+    - 선택 시 repo 필드 자동 입력 (clone_url)
+    - branch 필드도 default_branch로 자동 입력
+
+🪝 Phase 3: Webhook 자동 생성
+--------------------------------------------------------------------------------
+[F] Webhook 생성 API
+    - POST /api/projects 호출 시 자동으로 Webhook 생성
+    - GitHub API: POST /repos/{owner}/{repo}/hooks
+    - Payload URL: http://{서버주소}/webhook/github
+    - Content type: application/json
+    - Secret: DB에 저장된 webhook_secret 사용
+    - Events: ["push"] (나중에 pull_request 추가 가능)
+
+[F] Webhook 생성 권한 확인
+    - OAuth 스코프에 admin:repo_hook 포함되어야 함
+    - 권한 없으면 수동 Webhook 설정 안내 메시지
+
+[F] Webhook 삭제
+    - DELETE /api/projects/:id 호출 시 GitHub Webhook도 삭제
+    - webhook_id를 projects 테이블에 저장
+
+📊 Phase 4: 데이터베이스 스키마 변경
+--------------------------------------------------------------------------------
+[F] users 테이블 생성
+    CREATE TABLE users (
+        id INTEGER PRIMARY KEY,
+        github_id INTEGER UNIQUE NOT NULL,
+        github_username TEXT NOT NULL,
+        github_avatar_url TEXT,
+        access_token TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+[F] projects 테이블 수정
+    - user_id INTEGER 컬럼 추가 (FK to users.id)
+    - github_webhook_id INTEGER 컬럼 추가
+    - 레포지토리와 사용자 연결
+
+[F] 마이그레이션
+    - migrations/003_github_oauth.sql 생성
+
+🎨 Phase 5: 프론트엔드 UI 개선
+--------------------------------------------------------------------------------
+[F] 로그인 페이지
+    - "GitHub로 로그인" 버튼
+    - 로그인 안 된 경우 Setup 페이지 접근 차단
+    - 로그인 상태 표시 (우측 상단에 GitHub 아바타)
+
+[F] Setup 페이지 개선
+    - Repository 필드:
+      - "GitHub에서 선택" 버튼
+      - 또는 수동 입력 (GitHub 로그인 안 한 경우)
+    - Branch 필드: 자동 입력 (선택한 레포의 default_branch)
+    - Webhook 자동 생성 안내 메시지
+
+[F] Dashboard 페이지
+    - 로그아웃 버튼 추가
+    - 현재 사용자 정보 표시
+
+🔧 Phase 6: 백엔드 구현 상세
+--------------------------------------------------------------------------------
+[F] Dependencies 추가 (Cargo.toml)
+    - reqwest = { version = "0.12", features = ["json"] } # GitHub API 호출
+    - jsonwebtoken = "9" # JWT 토큰 (선택)
+
+[F] GitHub OAuth 모듈 (agent/src/github/)
+    - agent/src/github/mod.rs
+    - agent/src/github/oauth.rs - OAuth 플로우
+    - agent/src/github/api.rs - GitHub API 클라이언트
+    - agent/src/github/webhook.rs - Webhook 생성/삭제
+
+[F] API 엔드포인트 (agent/src/api/auth.rs)
+    - GET /auth/github - GitHub 로그인 시작
+    - GET /auth/github/callback - OAuth 콜백 처리
+    - GET /api/auth/me - 현재 사용자 정보
+    - POST /api/auth/logout - 로그아웃
+
+[F] API 엔드포인트 (agent/src/api/github_repos.rs)
+    - GET /api/github/repos - 사용자 레포지토리 목록
+
+[F] 미들웨어: 인증 확인
+    - 로그인 필요한 엔드포인트에 인증 미들웨어 추가
+    - 세션 쿠키 또는 Authorization 헤더 확인
+
+🚀 Phase 7: 배포 설정
+--------------------------------------------------------------------------------
+[F] OAuth 설정 UI
+    - Settings 페이지 추가
+    - GitHub OAuth Client ID/Secret 입력 폼
+    - Webhook Secret 표시 (읽기 전용)
+
+[F] 환경별 Callback URL
+    - 개발: http://localhost:10000/auth/github/callback
+    - 프로덕션: http://{실제도메인}/auth/github/callback
+    - DB에 base_url 설정 저장
+
+[F] HTTPS 고려사항
+    - GitHub OAuth는 localhost 외에는 HTTPS 필수
+    - 프로덕션 배포 시 리버스 프록시(Nginx) + Let's Encrypt
+
+⚠️ 보안 고려사항
+--------------------------------------------------------------------------------
+[F] Access Token 암호화
+    - DB에 저장할 때 암호화 (AES-256)
+    - 복호화 키는 환경변수 또는 별도 관리
+
+[F] CSRF 방지
+    - OAuth state 파라미터 사용
+    - 세션에 state 저장 후 콜백에서 검증
+
+[F] Rate Limiting
+    - GitHub API는 인증된 요청 5000/hour
+    - 레포지토리 목록 캐싱으로 API 호출 최소화
+
+📝 구현 우선순위
+--------------------------------------------------------------------------------
+1단계 (필수):
+  - Phase 1: OAuth 인증 (로그인/로그아웃)
+  - Phase 2: 레포지토리 목록
+  - Phase 4: DB 스키마
+  - Phase 5: 프론트엔드 UI
+
+2단계 (권장):
+  - Phase 3: Webhook 자동 생성
+  - Phase 7: 배포 설정
+
+3단계 (선택):
+  - Access Token 암호화
+  - HTTPS 설정
+
+🤔 대안: 간소화 버전
+--------------------------------------------------------------------------------
+만약 OAuth가 과도하다면:
+- GitHub Personal Access Token 입력받기
+  - 사용자가 직접 PAT 생성 (Settings → Developer settings → Personal access tokens)
+  - 스코프: repo, admin:repo_hook
+  - Setup 페이지에서 PAT 입력
+  - DB에 암호화하여 저장
+  - 레포 목록 조회, Webhook 생성은 동일하게 구현
+
+장점: OAuth 플로우 없이 빠르게 구현 가능
+단점: 사용자가 PAT 생성 과정을 알아야 함
+
+================================================================================
+추천 방향: OAuth 전체 구현 (1-2단계)
+이유: 사용자 경험이 훨씬 좋고, 프로덕션 수준의 앱에 적합

@@ -6,7 +6,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::github::GitHubClient;
+use crate::github::{GitHubClient, ProjectDetector};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -196,6 +196,53 @@ pub async fn list_folders(
             Json(serde_json::json!({
                 "error": format!("Failed to fetch folders: {}", e),
                 "folders": []
+            })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DetectProjectQuery {
+    pub owner: String,
+    pub repo: String,
+    pub branch: String,
+    pub path_filter: Option<String>,
+}
+
+/// Detect project type and generate configuration
+pub async fn detect_project(
+    State(state): State<AppState>,
+    Query(params): Query<DetectProjectQuery>,
+) -> impl IntoResponse {
+    let pat = match state.db.get_github_pat().await {
+        Ok(Some(pat)) => pat,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "No GitHub PAT configured"
+                })),
+            );
+        }
+    };
+
+    let client = GitHubClient::new(pat);
+    let detector = ProjectDetector::new(client);
+
+    match detector
+        .detect(
+            &params.owner,
+            &params.repo,
+            &params.branch,
+            params.path_filter.as_deref(),
+        )
+        .await
+    {
+        Ok(config) => (StatusCode::OK, Json(serde_json::json!(config))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": e
             })),
         ),
     }
