@@ -13,8 +13,12 @@ impl Database {
     }
 
     pub async fn migrate(&self) -> Result<(), sqlx::Error> {
-        let migration = include_str!("../../migrations/001_initial.sql");
-        sqlx::raw_sql(migration).execute(&self.pool).await?;
+        let migration1 = include_str!("../../migrations/001_initial.sql");
+        sqlx::raw_sql(migration1).execute(&self.pool).await?;
+
+        let migration2 = include_str!("../../migrations/002_settings.sql");
+        sqlx::raw_sql(migration2).execute(&self.pool).await?;
+
         Ok(())
     }
 
@@ -25,9 +29,9 @@ impl Database {
             .fetch_one(&self.pool)
             .await?;
 
-        let base_port = 9000;
-        let blue_port = base_port + (next_id as i32 * 10) + 1;
-        let green_port = base_port + (next_id as i32 * 10) + 2;
+        let base_port = 9999;
+        let blue_port = base_port + (next_id as i32 * 2);
+        let green_port = base_port + (next_id as i32 * 2) + 1;
 
         let result = sqlx::query(
             r#"
@@ -243,5 +247,27 @@ impl Database {
         )
         .fetch_all(&self.pool)
         .await
+    }
+
+    // Settings operations
+    pub async fn get_setting(&self, key: &str) -> Result<Option<String>, sqlx::Error> {
+        let value: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(value)
+    }
+
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO settings (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')"
+        )
+        .bind(key)
+        .bind(value)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 }

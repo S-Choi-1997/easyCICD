@@ -9,6 +9,7 @@ mod ws_broadcaster;
 
 use anyhow::Result;
 use axum::{routing::{get, post}, Router};
+use tower_http::services::ServeDir;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -25,22 +26,32 @@ async fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "lightweight_ci=debug,tower_http=debug".into()),
+                .unwrap_or_else(|_| "info".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    info!("Starting Lightweight CI/CD Agent");
+    info!("Starting Easy CI/CD Agent");
 
     // Initialize database
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "sqlite:///data/db/ci.db".to_string());
-
+    let database_url = "sqlite:///data/db.sqlite";
     info!("Connecting to database: {}", database_url);
-    let db = Database::connect(&database_url).await?;
+    let db = Database::connect(database_url).await?;
 
     info!("Running database migrations");
     db.migrate().await?;
+
+    // Initialize webhook secret (generate if not exists)
+    if let Ok(None) = db.get_setting("webhook_secret").await {
+        use rand::Rng;
+        let secret: String = rand::thread_rng()
+            .sample_iter(&rand::distributions::Alphanumeric)
+            .take(64)
+            .map(char::from)
+            .collect();
+        db.set_setting("webhook_secret", &secret).await?;
+        info!("Generated new webhook secret (check database or API)");
+    }
 
     // Create application state
     let state = AppState::new(db);
@@ -52,6 +63,8 @@ async fn main() -> Result<()> {
         .route("/webhook/github", post(github_webhook))
         .route("/ws", get(ws_handler))
         .nest("/api", api_routes())
+        // Serve static files from /frontend directory
+        .nest_service("/", ServeDir::new("../frontend"))
         .with_state(state.clone());
 
     // Start API server (port 3000)

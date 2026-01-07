@@ -58,7 +58,7 @@ pub async fn github_webhook(
     body: String,
 ) -> impl IntoResponse {
     // Verify signature
-    if let Err(e) = verify_signature(&headers, &body) {
+    if let Err(e) = verify_signature(&state, &headers, &body).await {
         warn!("Webhook signature verification failed: {}", e);
         return (
             StatusCode::UNAUTHORIZED,
@@ -243,13 +243,12 @@ fn match_path_filter(pattern: &str, files: &[String]) -> bool {
     files.iter().any(|f| globset.is_match(f))
 }
 
-fn verify_signature(headers: &HeaderMap, body: &str) -> Result<(), String> {
-    // Get webhook secret from env
-    let secret = std::env::var("GITHUB_WEBHOOK_SECRET").unwrap_or_default();
-    if secret.is_empty() {
-        // Skip verification if no secret is set
-        return Ok(());
-    }
+async fn verify_signature(state: &AppState, headers: &HeaderMap, body: &str) -> Result<(), String> {
+    // Get webhook secret from database
+    let secret = state.db.get_setting("webhook_secret")
+        .await
+        .map_err(|e| format!("Failed to get webhook secret: {}", e))?
+        .ok_or("Webhook secret not configured")?;
 
     // Get signature from header
     let signature_header = headers

@@ -57,3 +57,6 @@ futures-util = "0.3"
 
 # Glob pattern matching
 globset = "0.4"
+
+# Random generation
+rand = "0.8"

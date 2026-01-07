@@ -2,32 +2,46 @@ version: '3.8'
 
 services:
   agent:
-    build: ./agent
-    container_name: lightweight-ci
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    container_name: easycicd-agent
     restart: unless-stopped
 
     volumes:
       # DOOD: Mount Docker socket
       - /var/run/docker.sock:/var/run/docker.sock
 
-      # Persistent data
+      # Persistent data (SQLite DB & build logs)
       - ./data:/data
+
+      # Build cache (shared across builds)
+      - cache-gradle:/cache/gradle
+      - cache-maven:/cache/maven
+      - cache-npm:/cache/npm
+      - cache-pip:/cache/pip
+      - cache-cargo:/cache/cargo
+
+      # Static frontend files
+      - ./frontend:/app/frontend
 
     ports:
       - "3000:3000"  # API + WebSocket + Web UI
       - "8080:8080"  # Reverse Proxy (service access)
 
-    environment:
-      - DATABASE_URL=sqlite:///data/db/ci.db
-      - RUST_LOG=lightweight_ci=info,tower_http=debug
-      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-change-me-in-production}
-
     networks:
-      - ci-network
+      - easycicd
 
 networks:
-  ci-network:
+  easycicd:
     driver: bridge
 
+volumes:
+  cache-gradle:
+  cache-maven:
+  cache-npm:
+  cache-pip:
+  cache-cargo:
+
 # Runtime containers are dynamically created and managed by the agent
-# They will be connected to the ci-network
+# They will be connected to the easycicd network

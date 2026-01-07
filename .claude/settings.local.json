@@ -11,7 +11,24 @@
       "Bash(docker push:*)",
       "Bash(docker compose:*)",
       "Bash(docker exec:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: Implement Phase 2 with medium-priority improvements\n\nCore Features:\n- Build System: Docker-based build executor with Blue/Green deployment\n- API Server: REST API for projects, builds, webhooks, and WebSocket\n- Reverse Proxy: Path-based routing to active containers\n- Build Queue: Project-based sequential builds with cross-project parallelism\n\nAPI Endpoints:\n- POST /api/webhook - GitHub webhook handler with HMAC verification\n- GET/POST /api/projects - Project CRUD operations\n- DELETE /api/projects/:id - Project deletion with resource cleanup\n- POST /api/projects/:id/builds - Manual build trigger\n- GET /api/builds - Build query with filtering\n- WebSocket /ws - Real-time event streaming\n\nBuild & Deploy:\n- Git clone/pull with branch support\n- Docker build containers with cache mount mapping\n- Health check with 10 retries \\(5s interval\\)\n- Blue/Green slot switching with zero downtime\n- Container cleanup and log collection\n\nMedium-Priority Improvements:\n- Glob pattern support for path_filter \\(comma-separated patterns\\)\n- Manual build trigger API with commit info extraction\n- Project deletion with container stop and directory cleanup\n- Docker image pull error detection and propagation\n\nTechnical Fixes:\n- Added git to Dockerfile runtime dependencies\n- Fixed cache mount paths \\(gradle→/root/.gradle, npm→/root/.npm, etc\\)\n- Fixed finished_at update using finish_build\\(\\)\n- Fixed container cleanup bug \\(old slot detection\\)\n- Added network_mode: bridge for runtime containers\n- Added request header forwarding in reverse proxy\n\nDependencies Added:\n- globset 0.4 - Glob pattern matching for path filters\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git config:*)",
+      "Bash(git push:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(ssh-keyscan:*)",
+      "Bash(~/.ssh/known_hosts)",
+      "Bash(ssh:*)",
+      "Bash(ssh-keygen:*)",
+      "Bash(npm create:*)",
+      "Bash(curl:*)",
+      "Bash(sudo -E bash -)",
+      "Bash(sudo apt-get install:*)",
+      "Bash(node --version)",
+      "Bash(npm --version:*)",
+      "Bash(npm install:*)",
+      "Bash(npm run build:*)",
+      "Bash(test:*)"
     ]
   }
 }
