@@ -141,6 +141,40 @@ impl GitHubClient {
         Ok(response.json().await?)
     }
 
+    /// Get file content from repository
+    pub async fn get_file_content(&self, owner: &str, repo: &str, path: &str, branch: &str) -> Result<String> {
+        let url = format!("https://api.github.com/repos/{}/{}/contents/{}", owner, repo, path);
+        let response = self.client
+            .get(&url)
+            .query(&[("ref", branch)])
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("User-Agent", "EasyCI CD")
+            .header("Accept", "application/vnd.github.v3+json")
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await?;
+            return Err(anyhow!("GitHub API error ({}): {}", status, body));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct FileContent {
+            content: String,
+            encoding: String,
+        }
+
+        let file_content: FileContent = response.json().await?;
+
+        if file_content.encoding == "base64" {
+            let decoded = base64::decode(&file_content.content.replace("\n", ""))?;
+            Ok(String::from_utf8(decoded)?)
+        } else {
+            Ok(file_content.content)
+        }
+    }
+
     /// Delete webhook
     pub async fn delete_webhook(&self, owner: &str, repo: &str, hook_id: u64) -> Result<()> {
         let url = format!("https://api.github.com/repos/{}/{}/hooks/{}", owner, repo, hook_id);
