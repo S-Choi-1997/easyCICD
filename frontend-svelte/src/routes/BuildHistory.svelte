@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { link } from 'svelte-spa-router';
 
   export let params = {};
@@ -11,11 +11,74 @@
   let selectedBuild = null;
   let loading = true;
   let error = null;
+  let ws = null;
+  let buildLogs = [];
+  let isStreaming = false;
 
   onMount(async () => {
     await loadProjectInfo();
     await loadBuilds();
+    connectWebSocket();
   });
+
+  onDestroy(() => {
+    if (ws) {
+      ws.close();
+    }
+  });
+
+  function connectWebSocket() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+    ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      console.log('WebSocket connected');
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      handleWebSocketMessage(data);
+    };
+
+    ws.onerror = (err) => {
+      console.error('WebSocket error:', err);
+    };
+
+    ws.onclose = () => {
+      console.log('WebSocket closed, reconnecting...');
+      setTimeout(connectWebSocket, 3000);
+    };
+  }
+
+  function handleWebSocketMessage(data) {
+    if (data.type === 'Log' && selectedBuild && data.build_id === selectedBuild.id) {
+      buildLogs = [...buildLogs, data.line];
+      isStreaming = true;
+
+      // Auto scroll to bottom
+      setTimeout(() => {
+        const logViewer = document.querySelector('.log-viewer');
+        if (logViewer) {
+          logViewer.scrollTop = logViewer.scrollHeight;
+        }
+      }, 10);
+    } else if (data.type === 'BuildStatus' && data.project_id === parseInt(projectId)) {
+      // Reload builds when status changes
+      loadBuilds();
+
+      // Update selected build status
+      if (selectedBuild && data.build_id === selectedBuild.id) {
+        selectedBuild = {...selectedBuild, status: data.status};
+
+        // Stop streaming when build completes
+        if (data.status === 'Success' || data.status === 'Failed') {
+          isStreaming = false;
+        }
+      }
+    }
+  }
 
   async function loadProjectInfo() {
     try {
@@ -47,13 +110,11 @@
       const response = await fetch(`${API_BASE}/projects/${projectId}/builds`, {
         method: 'POST'
       });
-      if (!response.ok) throw new Error('빌드를 시작할 수 없습니다');
-
-      const result = await response.json();
-      alert(`빌드 #${result.build_id}가 시작되었습니다!`);
-      setTimeout(() => loadBuilds(), 1000);
+      if (response.ok) {
+        setTimeout(() => loadBuilds(), 1000);
+      }
     } catch (err) {
-      alert('빌드 시작 실패: ' + err.message);
+      console.error(err);
     }
   }
 
@@ -62,8 +123,29 @@
       const response = await fetch(`${API_BASE}/builds/${buildId}`);
       if (!response.ok) throw new Error('빌드 상세 정보를 가져올 수 없습니다');
       selectedBuild = await response.json();
+
+      // Reset logs and fetch from log file
+      buildLogs = [];
+      isStreaming = selectedBuild.status === 'Building' || selectedBuild.status === 'Queued';
+
+      // Fetch existing logs from file
+      await loadBuildLogs(buildId);
     } catch (err) {
-      alert('빌드 상세 정보 로딩 실패: ' + err.message);
+      console.error(err);
+    }
+  }
+
+  async function loadBuildLogs(buildId) {
+    try {
+      const response = await fetch(`${API_BASE}/builds/${buildId}/logs`);
+      if (response.ok) {
+        const text = await response.text();
+        if (text) {
+          buildLogs = text.split('\n').filter(line => line.trim());
+        }
+      }
+    } catch (err) {
+      console.error('로그 로딩 실패:', err);
     }
   }
 
@@ -81,7 +163,9 @@
 
 <header>
   <div class="header-content">
-    <h1>Easy CI/CD</h1>
+    <a href="/" use:link style="text-decoration: none; color: inherit; cursor: pointer;">
+      <h1>Easy CI/CD</h1>
+    </a>
     <div class="header-actions">
       <a href="/" use:link class="btn btn-secondary">← 대시보드로 돌아가기</a>
     </div>
@@ -178,11 +262,93 @@
         </div>
       </div>
 
-      <h3>빌드 로그</h3>
+      <div class="log-header">
+        <h3>빌드 로그</h3>
+        {#if isStreaming}
+          <span class="streaming-badge">🔴 실시간 스트리밍</span>
+        {/if}
+      </div>
       <div class="log-viewer">
-        <div class="log-line">로그 파일: {selectedBuild.log_path}</div>
-        <div class="log-line text-muted">로그 스트리밍은 아직 구현되지 않았습니다</div>
+        {#if buildLogs.length === 0}
+          <div class="log-line text-muted">
+            {#if isStreaming}
+              빌드를 시작하는 중...
+            {:else}
+              로그가 없습니다
+            {/if}
+          </div>
+        {:else}
+          {#each buildLogs as log, idx}
+            <div class="log-line">
+              <span class="log-number">{idx + 1}</span>
+              <span class="log-content">{log}</span>
+            </div>
+          {/each}
+        {/if}
       </div>
     </div>
   {/if}
 </div>
+
+<style>
+  .log-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+
+  .streaming-badge {
+    font-size: 0.875rem;
+    font-weight: 500;
+    padding: 0.25rem 0.75rem;
+    background: #fef2f2;
+    color: #dc2626;
+    border-radius: 9999px;
+    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
+    }
+  }
+
+  .log-viewer {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    font-family: 'Courier New', Consolas, monospace;
+    font-size: 0.875rem;
+    padding: 1rem;
+    border-radius: 0.375rem;
+    max-height: 500px;
+    overflow-y: auto;
+    line-height: 1.5;
+  }
+
+  .log-line {
+    display: flex;
+    margin-bottom: 0.25rem;
+  }
+
+  .log-number {
+    color: #6b7280;
+    min-width: 3rem;
+    text-align: right;
+    margin-right: 1rem;
+    user-select: none;
+  }
+
+  .log-content {
+    flex: 1;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .text-muted {
+    color: #9ca3af;
+  }
+</style>

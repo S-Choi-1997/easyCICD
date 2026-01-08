@@ -10,7 +10,7 @@ use crate::state::AppState;
 pub async fn run_build_worker(state: AppState) -> Result<()> {
     info!("Build worker started");
 
-    let docker = DockerClient::new()?;
+    let docker = DockerClient::new_with_host_path_detection().await?;
     let executor = BuildExecutor::new(state.clone(), docker.clone());
     let deployer = Deployer::new(state.clone(), docker);
 

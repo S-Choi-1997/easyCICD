@@ -86,9 +86,9 @@ async fn handle_request(
 
     // Preserve query string
     let target_uri = if let Some(query) = req.uri().query() {
-        format!("http://localhost:{}{}?{}", target_port, target_path, query)
+        format!("http://{}:{}{}?{}", state.gateway_ip, target_port, target_path, query)
     } else {
-        format!("http://localhost:{}{}", target_port, target_path)
+        format!("http://{}:{}{}", state.gateway_ip, target_port, target_path)
     };
 
     info!(

@@ -20,6 +20,7 @@ use build::run_build_worker;
 use api::{api_routes, github_webhook, ws_handler};
 use proxy::run_reverse_proxy;
 use ws_broadcaster::run_ws_broadcaster;
+use docker::DockerClient;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -58,8 +59,12 @@ async fn main() -> Result<()> {
         info!("Generated new webhook secret (check database or API)");
     }
 
+    // Initialize Docker client to get gateway IP
+    let docker = DockerClient::new_with_host_path_detection().await?;
+    let gateway_ip = docker.gateway_ip().to_string();
+
     // Create application state
-    let state = AppState::new(db);
+    let state = AppState::new(db, gateway_ip);
 
     info!("Application state initialized");
 

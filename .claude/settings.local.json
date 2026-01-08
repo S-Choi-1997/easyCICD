@@ -37,7 +37,24 @@
       "Bash(timeout 10 curl:*)",
       "Bash(docker images:*)",
       "Bash(docker inspect:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(cargo build:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(docker logs:*)",
+      "Bash(jq:*)",
+      "Bash(sqlite3:*)",
+      "Bash(docker ps:*)",
+      "Bash(timeout 60 docker logs:*)",
+      "Bash(timeout 10 docker logs:*)",
+      "Bash(/home/choho97/easycicd/deploy.sh:*)",
+      "Bash(docker run:*)",
+      "Bash(tail:*)",
+      "Bash(./deploy.sh:*)",
+      "Bash(docker stop:*)",
+      "Bash(timeout 120 bash -c 'while ! docker ps | grep -q \"\"choho97/lightweight-ci.*Up.*second\"\"; do sleep 2; done; echo \"\"Container is up!\"\"')",
+      "Bash(xargs cat:*)",
+      "Bash(xargs:*)",
+      "Bash(docker network inspect:*)"
     ]
   }
 }

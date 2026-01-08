@@ -25,6 +25,9 @@ impl Database {
         let migration3 = include_str!("../../migrations/003_github_pat.sql");
         sqlx::raw_sql(migration3).execute(&self.pool).await?;
 
+        let migration4 = include_str!("../../migrations/004_working_directory.sql");
+        sqlx::raw_sql(migration4).execute(&self.pool).await?;
+
         Ok(())
     }
 
@@ -44,6 +47,27 @@ impl Database {
             "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('github_pat', ?, datetime('now'))"
         )
         .bind(pat)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    // Domain operations (stored in settings)
+    pub async fn get_domain(&self) -> Result<Option<String>, sqlx::Error> {
+        let result: Option<(String,)> = sqlx::query_as(
+            "SELECT value FROM settings WHERE key = 'domain'"
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(result.map(|(value,)| value).filter(|v| !v.is_empty()))
+    }
+
+    pub async fn set_domain(&self, domain: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('domain', ?, datetime('now'))"
+        )
+        .bind(domain)
         .execute(&self.pool)
         .await?;
         Ok(())

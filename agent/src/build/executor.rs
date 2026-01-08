@@ -62,6 +62,10 @@ impl BuildExecutor {
         self.prepare_source(&workspace_path, &project.repo, &project.branch)
             .await?;
 
+        // Verify workspace has expected files
+        info!("Verifying workspace files at: {}", workspace_path.display());
+        self.verify_workspace(&workspace_path).await?;
+
         // Open log file
         let mut log_file = fs::OpenOptions::new()
             .create(true)
@@ -69,6 +73,11 @@ impl BuildExecutor {
             .open(&log_path)
             .await
             .context("Failed to open log file")?;
+
+        // Create nginx config if runtime is nginx
+        if project.runtime_image.contains("nginx") {
+            self.create_nginx_config(&output_path).await?;
+        }
 
         // Run build container
         info!("Running build container for build #{}", build.build_number);
@@ -81,6 +90,7 @@ impl BuildExecutor {
                 output_path.clone(),
                 cache_path,
                 &project.cache_type,
+                project.working_directory.as_deref().unwrap_or(""),
             )
             .await;
 
@@ -198,6 +208,103 @@ impl BuildExecutor {
         let commit_hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
         info!("Current commit: {}", commit_hash);
 
+        Ok(())
+    }
+
+    async fn verify_workspace(&self, workspace_path: &PathBuf) -> Result<()> {
+        // Check if workspace directory exists
+        if !workspace_path.exists() {
+            anyhow::bail!("Workspace directory does not exist: {}", workspace_path.display());
+        }
+
+        // List directory contents
+        let mut entries = fs::read_dir(workspace_path).await
+            .context("Failed to read workspace directory")?;
+
+        let mut file_count = 0;
+        let mut files = Vec::new();
+
+        while let Some(entry) = entries.next_entry().await? {
+            file_count += 1;
+            if file_count <= 10 {
+                files.push(entry.file_name().to_string_lossy().to_string());
+            }
+        }
+
+        if file_count == 0 {
+            anyhow::bail!("Workspace directory is empty: {}", workspace_path.display());
+        }
+
+        info!("Workspace verification passed - {} files/dirs found", file_count);
+        info!("First files: {:?}", files);
+
+        // Check for common build files
+        let common_files = ["package.json", "pom.xml", "build.gradle", "Cargo.toml", "Makefile", "Dockerfile"];
+        let mut found_files = Vec::new();
+
+        for file in &common_files {
+            if workspace_path.join(file).exists() {
+                found_files.push(*file);
+            }
+        }
+
+        if !found_files.is_empty() {
+            info!("Detected build files: {:?}", found_files);
+        }
+
+        Ok(())
+    }
+
+    async fn create_nginx_config(&self, output_path: &PathBuf) -> Result<()> {
+        let nginx_conf = r#"daemon off;
+error_log /dev/stdout info;
+pid /tmp/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    access_log /dev/stdout;
+    client_body_temp_path /tmp/client_body;
+    proxy_temp_path /tmp/proxy;
+    fastcgi_temp_path /tmp/fastcgi;
+
+    server {
+        listen 8080;
+        server_name _;
+        root /app;
+        index index.html;
+
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+
+        # Cache static assets
+        location ~* \.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2|ttf|eot)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+
+        # Health check endpoint
+        location = /health {
+            access_log off;
+            return 200 "OK";
+            add_header Content-Type text/plain;
+        }
+    }
+}
+"#;
+
+        let conf_path = output_path.join("nginx.conf");
+        fs::write(&conf_path, nginx_conf)
+            .await
+            .context("Failed to write nginx config")?;
+
+        info!("Created nginx config at: {}", conf_path.display());
         Ok(())
     }
 }

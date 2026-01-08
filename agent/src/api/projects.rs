@@ -54,6 +54,7 @@ struct CreateProjectRequest {
     build_image: String,
     build_command: String,
     cache_type: String,
+    working_directory: Option<String>,
     runtime_image: String,
     runtime_command: String,
     health_check_url: String,
@@ -71,6 +72,7 @@ async fn create_project(
         build_image: req.build_image,
         build_command: req.build_command,
         cache_type: req.cache_type,
+        working_directory: req.working_directory,
         runtime_image: req.runtime_image,
         runtime_command: req.runtime_command,
         health_check_url: req.health_check_url,
@@ -256,11 +258,12 @@ async fn delete_project(
     }
 
     // Remove directories
-    let workspace_path = PathBuf::from("/workspace/projects").join(&project.name);
-    let output_path = PathBuf::from("/workspace/outputs").join(&project.name);
-    let cache_path = PathBuf::from("/workspace/cache").join(&project.name);
+    let workspace_path = PathBuf::from("/data/workspace").join(&project.name);
+    let output_base = PathBuf::from("/data/output");
+    let cache_path = PathBuf::from("/data/cache").join(&project.cache_type);
+    let logs_path = PathBuf::from("/data/easycicd/logs").join(&project.name);
 
-    for path in [workspace_path, output_path, cache_path] {
+    for path in [workspace_path, cache_path, logs_path] {
         if path.exists() {
             info!("Removing directory: {:?}", path);
             if let Err(e) = fs::remove_dir_all(&path).await {
@@ -269,7 +272,22 @@ async fn delete_project(
         }
     }
 
-    // Delete from database
+    // Remove all build output directories for this project
+    // Since we don't have the exact build IDs, remove by pattern
+    if output_base.exists() {
+        if let Ok(mut entries) = fs::read_dir(&output_base).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                // Remove all build directories (they will be cascade deleted from DB anyway)
+                if entry.path().is_dir() {
+                    if let Err(e) = fs::remove_dir_all(entry.path()).await {
+                        warn!("Failed to remove build output {:?}: {}", entry.path(), e);
+                    }
+                }
+            }
+        }
+    }
+
+    // Delete from database (this will cascade delete builds due to ON DELETE CASCADE)
     if let Err(e) = state.db.delete_project(id).await {
         warn!("Failed to delete project from database: {}", e);
         return (

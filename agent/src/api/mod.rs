@@ -18,6 +18,8 @@ pub fn api_routes() -> Router<AppState> {
         .nest("/projects", projects_routes())
         .nest("/builds", builds_routes())
         .route("/settings/webhook-secret", get(settings::get_webhook_secret))
+        .route("/settings/domain", post(settings::set_domain))
+        .route("/settings/domain", get(settings::get_domain))
         .route("/settings/github-pat", post(github_api::set_github_pat))
         .route("/settings/github-pat-status", get(github_api::get_github_pat_status))
         .route("/github/repositories", get(github_api::list_repositories))

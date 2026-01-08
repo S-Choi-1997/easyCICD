@@ -231,6 +231,34 @@ header {
     background: var(--gray-600);
 }
 
+.status-deploying {
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+.status-deploying .status-dot {
+    background: #1d4ed8;
+    animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.status-success {
+    background: #dcfce7;
+    color: var(--success);
+}
+
+.status-success .status-dot {
+    background: var(--success);
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.4;
+    }
+}
+
 /* Form */
 .form-group {
     margin-bottom: 1.5rem;

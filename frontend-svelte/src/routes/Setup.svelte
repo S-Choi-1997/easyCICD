@@ -14,6 +14,7 @@
     let selectedRepo = '';
     let selectedBranch = '';
     let pathFilter = '';
+    let workflowPath = '.github/workflows/';  // Custom workflow path
 
     // Data from API
     let repositories = [];
@@ -22,16 +23,19 @@
     // Auto-detected configuration
     let detectedConfig = null;
     let showAdvanced = false;
+    let detectionStatus = 'idle'; // 'idle', 'loading', 'success', 'failed'
 
-    // Manual overrides (when user wants to customize)
-    let manualConfig = {
-        build_image: '',
-        build_command: '',
-        cache_type: '',
-        runtime_image: '',
-        runtime_command: '',
-        health_check_url: ''
-    };
+    // TOML configuration for advanced settings
+    let configToml = '';
+    let tomlError = '';
+    const tomlPlaceholder = `# 빌드 설정
+build_image = "node:20"
+build_command = "npm install && npm run build"
+
+# 실행 설정
+runtime_image = "nginx:alpine"
+runtime_command = "nginx -g 'daemon off;'"
+health_check_url = "/"`;
 
     onMount(async () => {
         await checkPATStatus();
@@ -53,7 +57,6 @@
 
     async function savePAT() {
         if (!githubPAT.trim()) {
-            alert('GitHub PAT을 입력하세요.');
             return;
         }
 
@@ -69,13 +72,9 @@
             if (response.ok) {
                 patConfigured = true;
                 githubUsername = data.github_username;
-                alert(`PAT 저장 완료! (${githubUsername})`);
                 await loadRepositories();
-            } else {
-                alert(`PAT 저장 실패: ${data.error}`);
             }
         } catch (error) {
-            alert('PAT 저장 중 오류 발생');
             console.error(error);
         }
     }
@@ -123,6 +122,7 @@
         }
 
         const [owner, repo] = selectedRepo.split('/');
+        detectionStatus = 'loading';
 
         try {
             const params = new URLSearchParams({
@@ -135,41 +135,90 @@
                 params.append('path_filter', pathFilter);
             }
 
+            if (workflowPath && workflowPath !== '.github/workflows/') {
+                params.append('workflow_path', workflowPath);
+            }
+
             const response = await fetch(`${API_BASE}/github/detect-project?${params}`);
             const data = await response.json();
 
             if (response.ok) {
                 detectedConfig = data;
-                // Initialize manual config with detected values
-                manualConfig = { ...data };
-                alert(`프로젝트 타입 감지 완료: ${data.project_type}`);
+                configToml = configToToml(data);
+                detectionStatus = 'success';
             } else {
-                alert(`자동 감지 실패: ${data.error}\n수동으로 설정하세요.`);
+                detectedConfig = null;
+                detectionStatus = 'failed';
                 showAdvanced = true;
             }
         } catch (error) {
             console.error('프로젝트 감지 실패:', error);
-            alert('프로젝트 감지 중 오류 발생');
+            detectedConfig = null;
+            detectionStatus = 'failed';
+            showAdvanced = true;
+        }
+    }
+
+    // Convert config object to TOML string
+    function configToToml(config) {
+        return `# 빌드 설정
+build_image = "${config.build_image || ''}"
+build_command = "${config.build_command || ''}"
+
+# 실행 설정
+runtime_image = "${config.runtime_image || ''}"
+runtime_command = "${config.runtime_command || ''}"
+health_check_url = "${config.health_check_url || ''}"`;
+    }
+
+    // Parse TOML string to config object (simple parser)
+    function tomlToConfig(toml) {
+        try {
+            const config = {};
+            const lines = toml.split('\n');
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith('#')) continue;
+
+                const match = trimmed.match(/^(\w+)\s*=\s*"([^"]*)"\s*$/);
+                if (match) {
+                    config[match[1]] = match[2];
+                }
+            }
+
+            // Validate required fields
+            const required = ['build_image', 'build_command', 'runtime_image'];
+            for (const field of required) {
+                if (!config[field]) {
+                    throw new Error(`필수 필드 누락: ${field}`);
+                }
+            }
+
+            return config;
+        } catch (error) {
+            throw new Error(`TOML 파싱 오류: ${error.message}`);
         }
     }
 
     async function registerProject() {
-        if (!projectName.trim()) {
-            alert('프로젝트 이름을 입력하세요.');
+        if (!projectName.trim() || !selectedRepo || !selectedBranch || (!detectedConfig && !showAdvanced)) {
             return;
         }
 
-        if (!selectedRepo || !selectedBranch) {
-            alert('레포지토리와 브랜치를 선택하세요.');
-            return;
-        }
+        let config;
 
-        if (!detectedConfig && !showAdvanced) {
-            alert('먼저 자동 감지를 실행하세요.');
-            return;
+        if (showAdvanced) {
+            // Parse TOML
+            try {
+                config = tomlToConfig(configToml);
+                tomlError = '';
+            } catch (error) {
+                tomlError = error.message;
+                return;
+            }
+        } else {
+            config = detectedConfig;
         }
-
-        const config = showAdvanced ? manualConfig : detectedConfig;
 
         const projectData = {
             name: projectName,
@@ -178,10 +227,11 @@
             branch: selectedBranch,
             build_image: config.build_image,
             build_command: config.build_command,
-            cache_type: config.cache_type,
+            cache_type: 'none',  // Always none for manual config
+            working_directory: config.working_directory || null,
             runtime_image: config.runtime_image,
-            runtime_command: config.runtime_command,
-            health_check_url: config.health_check_url,
+            runtime_command: config.runtime_command || '',
+            health_check_url: config.health_check_url || '/',
         };
 
         try {
@@ -192,14 +242,9 @@
             });
 
             if (response.ok) {
-                alert('프로젝트 등록 완료!');
                 push('/');
-            } else {
-                const data = await response.json();
-                alert(`프로젝트 등록 실패: ${data.error || '알 수 없는 오류'}`);
             }
         } catch (error) {
-            alert('프로젝트 등록 중 오류 발생');
             console.error(error);
         }
     }
@@ -292,11 +337,34 @@
                 <p class="help-text">비워두면 전체 레포지토리 대상</p>
             </div>
 
-            <!-- Auto-detect Button -->
+            <!-- Workflow Path (Optional) -->
+            <div class="form-group">
+                <label>워크플로우 경로 (선택사항)</label>
+                <input
+                    type="text"
+                    bind:value={workflowPath}
+                    placeholder=".github/workflows/"
+                    class="input-medium"
+                />
+                <p class="help-text">GitHub Actions 워크플로우가 다른 위치에 있는 경우 수정</p>
+            </div>
+
+            <!-- Auto-detect Button with Status -->
             {#if selectedRepo && selectedBranch}
-                <button on:click={detectProject} class="btn-detect">
-                    🔍 자동 감지
-                </button>
+                <div class="detect-container">
+                    <button on:click={detectProject} class="btn-detect" disabled={detectionStatus === 'loading'}>
+                        🔍 자동 감지
+                    </button>
+                    {#if detectionStatus === 'idle'}
+                        <span class="status-icon idle">○</span>
+                    {:else if detectionStatus === 'loading'}
+                        <span class="status-icon loading">⟳</span>
+                    {:else if detectionStatus === 'success'}
+                        <span class="status-icon success">✓</span>
+                    {:else if detectionStatus === 'failed'}
+                        <span class="status-icon failed">✗</span>
+                    {/if}
+                </div>
             {/if}
 
             <!-- Detected Configuration Display -->
@@ -322,47 +390,29 @@
                 </div>
             {/if}
 
-            <!-- Advanced Settings -->
+            <!-- Advanced Settings (TOML format) -->
             {#if showAdvanced}
                 <div class="advanced-section">
-                    <h3>고급 설정 (수동 조정)</h3>
-
-                    <div class="form-group">
-                        <label>빌드 이미지</label>
-                        <input type="text" bind:value={manualConfig.build_image} class="input-full" />
-                    </div>
-
-                    <div class="form-group">
-                        <label>빌드 명령어</label>
-                        <input type="text" bind:value={manualConfig.build_command} class="input-full" />
-                    </div>
-
-                    <div class="form-group">
-                        <label>캐시 타입</label>
-                        <select bind:value={manualConfig.cache_type} class="select-short">
-                            <option value="none">없음</option>
-                            <option value="gradle">Gradle</option>
-                            <option value="maven">Maven</option>
-                            <option value="npm">npm</option>
-                            <option value="pip">pip</option>
-                            <option value="rust">Rust</option>
-                            <option value="go">Go</option>
-                        </select>
-                    </div>
-
-                    <div class="form-group">
-                        <label>실행 이미지</label>
-                        <input type="text" bind:value={manualConfig.runtime_image} class="input-full" />
-                    </div>
-
-                    <div class="form-group">
-                        <label>실행 명령어</label>
-                        <input type="text" bind:value={manualConfig.runtime_command} class="input-full" />
-                    </div>
-
-                    <div class="form-group">
-                        <label>헬스체크 URL</label>
-                        <input type="text" bind:value={manualConfig.health_check_url} class="input-short" />
+                    <h3>고급 설정</h3>
+                    <p class="help-text">
+                        YML처럼 간단한 형식으로 설정을 수정할 수 있습니다. 주석(#)도 사용 가능합니다.
+                    </p>
+                    <textarea
+                        bind:value={configToml}
+                        class="config-textarea"
+                        rows="9"
+                        placeholder={tomlPlaceholder}
+                    ></textarea>
+                    {#if tomlError}
+                        <div class="error-message">{tomlError}</div>
+                    {/if}
+                    <div class="help-text" style="margin-top: 0.5rem;">
+                        <strong>예시:</strong><br>
+                        <code>build_image</code>: 빌드할 Docker 이미지 (예: node:20, python:3.11)<br>
+                        <code>build_command</code>: 빌드 명령어<br>
+                        <code>runtime_image</code>: 실행할 Docker 이미지<br>
+                        <code>runtime_command</code>: 실행 명령어<br>
+                        <code>health_check_url</code>: 헬스체크 경로
                     </div>
                 </div>
             {/if}
@@ -502,16 +552,69 @@
         background: var(--primary-dark);
     }
 
+    .detect-container {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        margin: 1rem 0;
+    }
+
     .btn-detect {
         background: #3b82f6;
         color: white;
         font-size: 1.125rem;
         padding: 0.75rem 1.5rem;
-        margin: 1rem 0;
     }
 
-    .btn-detect:hover {
+    .btn-detect:hover:not(:disabled) {
         background: #2563eb;
+    }
+
+    .btn-detect:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+    }
+
+    .status-icon {
+        font-size: 1.5rem;
+        font-weight: bold;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2rem;
+        height: 2rem;
+        border-radius: 50%;
+    }
+
+    .status-icon.idle {
+        color: #9ca3af;
+        border: 2px solid #9ca3af;
+    }
+
+    .status-icon.loading {
+        color: #3b82f6;
+        animation: spin 1s linear infinite;
+    }
+
+    .status-icon.success {
+        color: #10b981;
+        background: #d1fae5;
+        border: 2px solid #10b981;
+    }
+
+    .status-icon.failed {
+        color: #ef4444;
+        background: #fee2e2;
+        border: 2px solid #ef4444;
+    }
+
+    @keyframes spin {
+        from {
+            transform: rotate(0deg);
+        }
+        to {
+            transform: rotate(360deg);
+        }
     }
 
     .btn-toggle {
@@ -574,5 +677,31 @@
         gap: 1rem;
         margin-top: 2rem;
         justify-content: center;
+    }
+
+    .config-textarea {
+        width: 100%;
+        font-family: 'Courier New', monospace;
+        font-size: 0.875rem;
+        padding: 1rem;
+        border: 1px solid var(--gray-300);
+        border-radius: 0.375rem;
+        background: #f9fafb;
+        resize: vertical;
+    }
+
+    .config-textarea:focus {
+        outline: none;
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+
+    .error-message {
+        margin-top: 0.5rem;
+        padding: 0.75rem;
+        background: #fee2e2;
+        color: #991b1b;
+        border-radius: 0.375rem;
+        font-size: 0.875rem;
     }
 </style>

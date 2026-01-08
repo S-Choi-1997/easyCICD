@@ -13,10 +13,11 @@ pub struct AppState {
     pub event_bus: EventSender,
     pub build_queue: Arc<BuildQueue>,
     pub ws_connections: Arc<WsConnections>,
+    pub gateway_ip: String,
 }
 
 impl AppState {
-    pub fn new(db: Database) -> Self {
+    pub fn new(db: Database, gateway_ip: String) -> Self {
         let (event_tx, _) = broadcast::channel(100);
 
         Self {
@@ -24,6 +25,7 @@ impl AppState {
             event_bus: event_tx,
             build_queue: Arc::new(BuildQueue::new()),
             ws_connections: Arc::new(WsConnections::new()),
+            gateway_ip,
         }
     }
 

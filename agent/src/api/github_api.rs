@@ -207,6 +207,7 @@ pub struct DetectProjectQuery {
     pub repo: String,
     pub branch: String,
     pub path_filter: Option<String>,
+    pub workflow_path: Option<String>,
 }
 
 /// Detect project type and generate configuration
@@ -235,6 +236,7 @@ pub async fn detect_project(
             &params.repo,
             &params.branch,
             params.path_filter.as_deref(),
+            params.workflow_path.as_deref(),
         )
         .await
     {

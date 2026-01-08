@@ -83,7 +83,7 @@ impl GitHubClient {
 
     /// Get repository tree (for folder structure)
     pub async fn get_tree(&self, owner: &str, repo: &str, sha: &str) -> Result<Tree> {
-        let url = format!("https://api.github.com/repos/{}/{}/git/trees/{}", owner, repo, sha);
+        let url = format!("https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1", owner, repo, sha);
         let response = self.client
             .get(&url)
             .header("Authorization", format!("Bearer {}", self.token))

@@ -11,6 +11,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
 
       # Persistent data (SQLite DB & build logs)
+      # IMPORTANT: Use absolute path for DOOD compatibility
+      # The agent will auto-detect this path for build/runtime containers
       - ./data:/data
 
       # Build cache (shared across builds)

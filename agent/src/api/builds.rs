@@ -14,6 +14,7 @@ pub fn builds_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(list_builds))
         .route("/{id}", get(get_build))
+        .route("/{id}/logs", get(get_build_logs))
 }
 
 #[derive(Deserialize)]
@@ -53,6 +54,26 @@ async fn get_build(
         Err(e) => {
             warn!("Failed to get build: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(None))
+        }
+    }
+}
+
+async fn get_build_logs(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    match state.db.get_build(id).await {
+        Ok(Some(build)) => {
+            // Read log file
+            match tokio::fs::read_to_string(&build.log_path).await {
+                Ok(content) => (StatusCode::OK, content),
+                Err(_) => (StatusCode::NOT_FOUND, String::from("Log file not found")),
+            }
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, String::from("Build not found")),
+        Err(e) => {
+            warn!("Failed to get build logs: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))
         }
     }
 }

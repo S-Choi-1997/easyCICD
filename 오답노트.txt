@@ -45,6 +45,61 @@
 해결: "../frontend" → "frontend" 변경
 파일: agent/src/main.rs:71
 
+❌ 문제 7: nginx 설정 - daemon directive 중복
+--------------------------------------------------------------------------------
+원인: nginx.conf에 "daemon off;" 포함, runtime_command에도 "-g 'daemon off;'" 포함
+에러: nginx: [emerg] "daemon" directive is duplicate in /app/nginx.conf:1
+영향: Runtime 컨테이너가 계속 재시작하며 헬스체크 실패
+해결:
+  1. nginx.conf에만 "daemon off;" 유지
+  2. runtime_command에서 "-g 'daemon off;'" 제거
+  3. detector.rs의 모든 nginx 관련 설정 수정
+파일:
+  - agent/src/github/detector.rs:125 (Node.js Frontend)
+  - agent/src/github/detector.rs:224 (Static Site)
+  - agent/src/github/detector.rs:425 (기존에 수정된 곳)
+
+❌ 문제 8: Docker 네트워크 통신 실패 - localhost 사용
+--------------------------------------------------------------------------------
+원인: Agent와 Runtime 컨테이너가 서로 다른 네트워크 관점에서 localhost 사용
+배경:
+  - Agent 컨테이너: easycicd_easycicd 네트워크 (gateway: 172.19.0.1)
+  - Runtime 컨테이너: 처음에는 별도 네트워크
+  - 헬스체크/프록시에서 localhost 사용 시 자기 자신을 가리킴
+
+문제 8-1: 헬스체크 실패
+에러: Health check failed - error sending request for url (http://localhost:10001/health)
+원인: Agent가 localhost:10001 호출 시 자기 자신을 가리킴
+시도1: 172.17.0.1 사용 → 실패 (bridge 네트워크, agent는 easycicd 네트워크)
+시도2: host 네트워크 모드 → 실패 (포트 바인딩 안됨)
+해결:
+  1. Runtime 컨테이너를 easycicd_easycicd 네트워크에 연결
+  2. Gateway IP (172.19.0.1) 자동 감지
+  3. 헬스체크에서 gateway_ip 사용
+파일:
+  - agent/src/docker/client.rs:60-72 (gateway IP 감지)
+  - agent/src/docker/client.rs:293-304 (네트워크 연결)
+  - agent/src/build/deployer.rs:226-227 (헬스체크 URL)
+
+문제 8-2: 프록시 연결 실패
+에러: Failed to proxy request: error sending request for url (http://localhost:10001/)
+원인: Reverse proxy에서 localhost:10001 호출 시 자기 자신을 가리킴
+해결:
+  1. AppState에 gateway_ip 필드 추가
+  2. main.rs에서 DockerClient 초기화 후 gateway_ip 추출
+  3. 프록시 라우터에서 gateway_ip 사용
+파일:
+  - agent/src/state.rs:16 (gateway_ip 필드 추가)
+  - agent/src/state.rs:20 (생성자 파라미터 추가)
+  - agent/src/main.rs:63-64 (DockerClient 초기화)
+  - agent/src/proxy/router.rs:89-92 (gateway_ip 사용)
+
+네트워크 구조 이해:
+  - Cloudflare Tunnel → 172.17.0.1:9999 (또는 172.19.0.1:9999)
+  - 포트 바인딩: 0.0.0.0:9999→8080 (모든 네트워크에서 접근 가능)
+  - Agent 내부: 172.19.0.1:10001로 프록시 (같은 네트워크 내 통신)
+  - Runtime 컨테이너: easycicd_easycicd + bridge 네트워크 (멀티 네트워크)
+
 ✅ 최종 해결 사항
 --------------------------------------------------------------------------------
 1. SQLite 자동 생성: create_if_missing(true)
@@ -53,12 +108,18 @@
 4. GLIBC 통일: debian:trixie-slim
 5. 정적 파일: frontend 상대 경로
 6. 포트 설정: 웹 UI 10000, 리버스 프록시 9999, 프로젝트 10000부터 시작
+7. nginx 설정: daemon off는 nginx.conf에만
+8. 네트워크 통신: Gateway IP (172.19.0.1) 자동 감지 및 사용
+9. Runtime 네트워크: easycicd_easycicd 네트워크 연결
+10. 모노레포 working_directory: path_filter로부터 추출, 빌드 컨테이너 WORKDIR 동적 설정
 
 🚀 배포 완료
 --------------------------------------------------------------------------------
-Docker Hub: choho97/lightweight-ci:latest (sha256:df8d25968e0918...)
-Git Commit: 13f8cc6
+Docker Hub: choho97/lightweight-ci:latest (sha256:319e581d0b94...)
+Git Commit: (최신)
 컨테이너: 정상 실행 중
+헬스체크: 성공 (http://172.19.0.1:10001/health)
+프록시: 정상 작동 (http://172.19.0.1:10001/)
 
 📋 실행 방법
 --------------------------------------------------------------------------------
@@ -66,3 +127,17 @@ Git Commit: 13f8cc6
 2. http://localhost:10000 접속 (웹 UI)
 3. http://localhost:9999/{project_name} (배포된 앱)
 4. GET /api/settings/webhook-secret로 Webhook Secret 확인
+
+🔍 네트워크 디버깅 명령어
+--------------------------------------------------------------------------------
+# Gateway IP 확인
+docker network inspect easycicd_easycicd | jq '.[0].IPAM.Config[0].Gateway'
+
+# Agent IP 확인
+docker inspect easycicd-agent | jq '.[0].NetworkSettings.Networks.easycicd_easycicd.IPAddress'
+
+# Runtime 컨테이너 네트워크 확인
+docker inspect tt-green | jq '.[0].NetworkSettings.Networks | keys'
+
+# 프록시 테스트
+curl http://localhost:9999/tt/

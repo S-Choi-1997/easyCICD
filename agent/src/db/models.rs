@@ -78,6 +78,7 @@ pub struct Project {
     pub build_image: String,
     pub build_command: String,
     pub cache_type: String,
+    pub working_directory: Option<String>,
 
     // Deploy configuration
     pub runtime_image: String,
@@ -173,6 +174,7 @@ pub struct CreateProject {
     pub build_image: String,
     pub build_command: String,
     pub cache_type: String,
+    pub working_directory: Option<String>,
 
     pub runtime_image: String,
     pub runtime_command: String,

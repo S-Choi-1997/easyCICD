@@ -1,15 +1,69 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { link } from 'svelte-spa-router';
 
   const API_BASE = '/api';
   let projects = [];
   let loading = true;
   let error = null;
+  let domain = null;
+  let ws = null;
 
   onMount(async () => {
+    await loadDomain();
     await loadProjects();
+    connectWebSocket();
   });
+
+  onDestroy(() => {
+    if (ws) {
+      ws.close();
+    }
+  });
+
+  function connectWebSocket() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+    ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      console.log('WebSocket connected');
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      handleWebSocketMessage(data);
+    };
+
+    ws.onerror = (err) => {
+      console.error('WebSocket error:', err);
+    };
+
+    ws.onclose = () => {
+      console.log('WebSocket closed, reconnecting...');
+      setTimeout(connectWebSocket, 3000);
+    };
+  }
+
+  function handleWebSocketMessage(data) {
+    if (data.type === 'BuildStatus') {
+      // Reload projects when any build status changes
+      loadProjects();
+    }
+  }
+
+  async function loadDomain() {
+    try {
+      const response = await fetch(`${API_BASE}/settings/domain`);
+      const data = await response.json();
+      if (data.configured) {
+        domain = data.domain;
+      }
+    } catch (error) {
+      console.error('도메인 로드 실패:', error);
+    }
+  }
 
   async function loadProjects() {
     loading = true;
@@ -31,13 +85,11 @@
       const response = await fetch(`${API_BASE}/projects/${projectId}/builds`, {
         method: 'POST'
       });
-      if (!response.ok) throw new Error('빌드를 시작할 수 없습니다');
-
-      const result = await response.json();
-      alert(`빌드 #${result.build_id}가 시작되었습니다!`);
-      setTimeout(() => loadProjects(), 1000);
+      if (response.ok) {
+        setTimeout(() => loadProjects(), 1000);
+      }
     } catch (err) {
-      alert('빌드 시작 실패: ' + err.message);
+      console.error(err);
     }
   }
 
@@ -50,12 +102,11 @@
       const response = await fetch(`${API_BASE}/projects/${projectId}`, {
         method: 'DELETE'
       });
-      if (!response.ok) throw new Error('프로젝트를 삭제할 수 없습니다');
-
-      alert('프로젝트가 삭제되었습니다!');
-      loadProjects();
+      if (response.ok) {
+        loadProjects();
+      }
     } catch (err) {
-      alert('프로젝트 삭제 실패: ' + err.message);
+      console.error(err);
     }
   }
 
@@ -72,12 +123,21 @@
     }
     return '배포 안됨';
   }
+
+  function getProjectUrl(projectName) {
+    const host = domain || `${window.location.hostname}:9999`;
+    const protocol = domain && !domain.includes('localhost') ? 'https' : 'http';
+    return `${protocol}://${host}/${projectName}/`;
+  }
 </script>
 
 <header>
   <div class="header-content">
-    <h1>Easy CI/CD</h1>
+    <a href="/" use:link style="text-decoration: none; color: inherit; cursor: pointer;">
+      <h1>Easy CI/CD</h1>
+    </a>
     <div class="header-actions">
+      <a href="/settings" use:link class="btn btn-secondary">⚙️ 설정</a>
       <a href="/setup" use:link class="btn btn-primary">+ 새 프로젝트</a>
     </div>
   </div>
@@ -108,27 +168,29 @@
     {:else}
       {#each projects as project}
         <div class="project-card">
-          <div class="project-header">
-            <div>
-              <div class="project-name">{project.name}</div>
-              <a href="http://localhost:9999/{project.name}/" target="_blank" class="project-url">
-                http://localhost:9999/{project.name}/
-              </a>
+          <div on:click={() => window.location.hash = `/build/${project.id}`} style="cursor: pointer;">
+            <div class="project-header">
+              <div>
+                <div class="project-name">{project.name}</div>
+                <div class="project-url">
+                  {getProjectUrl(project.name)}
+                </div>
+              </div>
+              <span class="status-badge status-{getStatusClass(project)}">
+                <span class="status-dot"></span>
+                {getStatusText(project)}
+              </span>
             </div>
-            <span class="status-badge status-{getStatusClass(project)}">
-              <span class="status-dot"></span>
-              {getStatusText(project)}
-            </span>
-          </div>
 
-          <div class="project-info">
-            <div><strong>레포지토리:</strong> {project.repo}</div>
-            <div><strong>브랜치:</strong> {project.branch}</div>
-            <div><strong>활성 슬롯:</strong> {project.active_slot}</div>
+            <div class="project-info">
+              <div><strong>레포지토리:</strong> {project.repo}</div>
+              <div><strong>브랜치:</strong> {project.branch}</div>
+              <div><strong>활성 슬롯:</strong> {project.active_slot}</div>
+            </div>
           </div>
 
           <div class="project-actions">
-            <a href="/build/{project.id}" use:link class="btn btn-secondary btn-sm">빌드 내역</a>
+            <a href="{getProjectUrl(project.name)}" target="_blank" class="btn btn-secondary btn-sm">🔗 열기</a>
             <button on:click={() => triggerBuild(project.id)} class="btn btn-primary btn-sm">
               빌드 시작
             </button>

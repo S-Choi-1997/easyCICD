@@ -165,31 +165,32 @@ impl Deployer {
             Err(e) => {
                 warn!("Health check failed: {}", e);
 
-                // Rollback: stop and remove new container
-                self.docker.stop_container(&container_id).await.ok();
-                self.docker.remove_container(&container_id).await.ok();
+                // TODO: TEMPORARILY DISABLED FOR DEBUGGING
+                // // Rollback: stop and remove new container
+                // self.docker.stop_container(&container_id).await.ok();
+                // self.docker.remove_container(&container_id).await.ok();
 
-                // Clear container ID from database
-                match target_slot {
-                    Slot::Blue => {
-                        self.state
-                            .db
-                            .update_project_blue_container(project.id, None)
-                            .await?;
-                    }
-                    Slot::Green => {
-                        self.state
-                            .db
-                            .update_project_green_container(project.id, None)
-                            .await?;
-                    }
-                }
+                // // Clear container ID from database
+                // match target_slot {
+                //     Slot::Blue => {
+                //         self.state
+                //             .db
+                //             .update_project_blue_container(project.id, None)
+                //             .await?;
+                //     }
+                //     Slot::Green => {
+                //         self.state
+                //             .db
+                //             .update_project_green_container(project.id, None)
+                //             .await?;
+                //     }
+                // }
 
-                // Update build status to Failed
-                self.state
-                    .db
-                    .finish_build(build.id, BuildStatus::Failed)
-                    .await?;
+                // // Update build status to Failed
+                // self.state
+                //     .db
+                //     .finish_build(build.id, BuildStatus::Failed)
+                //     .await?;
 
                 self.state.emit_event(Event::Deployment {
                     project_id: project.id,
@@ -223,7 +224,8 @@ impl Deployer {
     async fn perform_health_check(&self, project: &Project, build: &Build, port: u16) -> Result<()> {
         let max_attempts = 10;
         let retry_interval = Duration::from_secs(5);
-        let health_check_url = format!("http://localhost:{}{}", port, project.health_check_url);
+        let gateway_ip = self.docker.gateway_ip();
+        let health_check_url = format!("http://{}:{}{}", gateway_ip, port, project.health_check_url);
 
         info!("Starting health check: {}", health_check_url);
 
@@ -240,8 +242,9 @@ impl Deployer {
 
             match reqwest::get(&health_check_url).await {
                 Ok(response) => {
-                    if response.status().is_success() {
-                        info!("Health check passed on attempt {}/{}", attempt, max_attempts);
+                    let status_code = response.status();
+                    if status_code.is_success() {
+                        info!("Health check passed on attempt {}/{} - Status: {}", attempt, max_attempts, status_code);
 
                         self.state.emit_event(Event::HealthCheck {
                             project_id: project.id,
@@ -255,19 +258,33 @@ impl Deployer {
 
                         return Ok(());
                     } else {
+                        let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
                         warn!(
-                            "Health check returned status {} on attempt {}/{}",
-                            response.status(),
+                            "Health check returned status {} on attempt {}/{} - URL: {} - Body preview: {}",
+                            status_code,
                             attempt,
-                            max_attempts
+                            max_attempts,
+                            health_check_url,
+                            &body.chars().take(200).collect::<String>()
                         );
                     }
                 }
                 Err(e) => {
                     warn!(
-                        "Health check failed on attempt {}/{}: {}",
-                        attempt, max_attempts, e
+                        "Health check failed on attempt {}/{} - URL: {} - Error: {}",
+                        attempt, max_attempts, health_check_url, e
                     );
+
+                    // Check if container is still running
+                    if let Some(container_id) = match port {
+                        p if p == project.blue_port as u16 => project.blue_container_id.as_ref(),
+                        p if p == project.green_port as u16 => project.green_container_id.as_ref(),
+                        _ => None,
+                    } {
+                        if !self.docker.is_container_running(container_id).await {
+                            warn!("Container {} is not running!", container_id);
+                        }
+                    }
                 }
             }
 

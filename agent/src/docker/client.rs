@@ -1,25 +1,99 @@
 use anyhow::{Context, Result};
 use bollard::container::{
-    Config, CreateContainerOptions, LogOutput, RemoveContainerOptions, StartContainerOptions,
+    Config, CreateContainerOptions, InspectContainerOptions, LogOutput, RemoveContainerOptions, StartContainerOptions,
     StopContainerOptions,
 };
 use bollard::image::CreateImageOptions;
 use bollard::Docker;
 use futures_util::StreamExt;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
 #[derive(Clone)]
 pub struct DockerClient {
     docker: Docker,
+    host_data_path: Option<String>,
+    gateway_ip: String,
 }
 
 impl DockerClient {
     pub fn new() -> Result<Self> {
         let docker = Docker::connect_with_local_defaults()
             .context("Failed to connect to Docker daemon")?;
-        Ok(Self { docker })
+        Ok(Self {
+            docker,
+            host_data_path: None,
+            gateway_ip: "172.17.0.1".to_string(),
+        })
+    }
+
+    pub async fn new_with_host_path_detection() -> Result<Self> {
+        let docker = Docker::connect_with_local_defaults()
+            .context("Failed to connect to Docker daemon")?;
+
+        let mut client = Self {
+            docker: docker.clone(),
+            host_data_path: None,
+            gateway_ip: "172.17.0.1".to_string(),
+        };
+
+        // Detect host path and gateway IP by inspecting our own container
+        if let Ok(hostname) = std::fs::read_to_string("/etc/hostname") {
+            let container_id = hostname.trim();
+            info!("Detecting host path for container: {}", container_id);
+
+            if let Ok(inspect) = docker.inspect_container(container_id, None::<InspectContainerOptions>).await {
+                // Detect host data path
+                if let Some(mounts) = inspect.mounts {
+                    for mount in mounts {
+                        if mount.destination == Some("/data".to_string()) {
+                            if let Some(source) = mount.source {
+                                info!("Detected host data path: {}", source);
+                                client.host_data_path = Some(source);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Detect gateway IP from network settings
+                if let Some(network_settings) = inspect.network_settings {
+                    if let Some(networks) = network_settings.networks {
+                        if let Some((_name, network)) = networks.iter().next() {
+                            if let Some(gateway) = &network.gateway {
+                                if !gateway.is_empty() {
+                                    info!("Detected gateway IP: {}", gateway);
+                                    client.gateway_ip = gateway.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if client.host_data_path.is_none() {
+            warn!("Could not detect host data path - DOOD mounts may fail!");
+        }
+
+        Ok(client)
+    }
+
+    /// Convert container path to host path for DOOD
+    fn to_host_path(&self, container_path: &Path) -> PathBuf {
+        if let Some(host_data) = &self.host_data_path {
+            // If path starts with /data, replace it with host path
+            if let Ok(rel_path) = container_path.strip_prefix("/data") {
+                let host_path = PathBuf::from(host_data).join(rel_path);
+                info!("Path conversion: {} -> {}", container_path.display(), host_path.display());
+                return host_path;
+            }
+        }
+
+        // Fallback: use original path (may fail in DOOD)
+        warn!("No host path conversion for: {}", container_path.display());
+        container_path.to_path_buf()
     }
 
     /// Pull image if not exists
@@ -75,14 +149,27 @@ impl DockerClient {
         output_path: PathBuf,
         cache_path: PathBuf,
         cache_type: &str,
+        working_directory: &str,
     ) -> Result<(String, Vec<String>)> {
         self.ensure_image(image).await?;
 
         let container_name = format!("build-{}", uuid::Uuid::new_v4());
 
+        // Convert container paths to host paths for DOOD
+        let host_workspace = self.to_host_path(&workspace_path);
+        let host_output = self.to_host_path(&output_path);
+        let host_cache = self.to_host_path(&cache_path);
+
+        info!("Build container mounts:");
+        info!("  Workspace: {} (host: {})", workspace_path.display(), host_workspace.display());
+        info!("  Output: {} (host: {})", output_path.display(), host_output.display());
+        info!("  Cache: {} (host: {})", cache_path.display(), host_cache.display());
+
         let mut binds = vec![
-            format!("{}:/app:ro", workspace_path.display()),
-            format!("{}:/output", output_path.display()),
+            format!("{}:/app", host_workspace.display()),
+            format!("{}:/output", host_output.display()),
+            // Mount Docker socket for Docker-outside-of-Docker (DOOD)
+            "/var/run/docker.sock:/var/run/docker.sock".to_string(),
         ];
 
         // Add cache mount if provided
@@ -95,13 +182,20 @@ impl DockerClient {
                 "cargo" => "/usr/local/cargo/registry",
                 _ => "/cache",
             };
-            binds.push(format!("{}:{}", cache_path.display(), cache_mount));
+            binds.push(format!("{}:{}", host_cache.display(), cache_mount));
         }
+
+        // Determine working directory
+        let work_dir = if working_directory.is_empty() {
+            "/app".to_string()
+        } else {
+            format!("/app/{}", working_directory.trim_start_matches('/'))
+        };
 
         let config = Config {
             image: Some(image.to_string()),
             cmd: Some(vec!["/bin/sh".to_string(), "-c".to_string(), command.to_string()]),
-            working_dir: Some("/app".to_string()),
+            working_dir: Some(work_dir),
             host_config: Some(bollard::models::HostConfig {
                 binds: Some(binds),
                 auto_remove: Some(false),
@@ -155,9 +249,15 @@ impl DockerClient {
                 }
                 Err(e) => {
                     warn!("Error reading logs: {}", e);
+                    logs.push(format!("ERROR: Failed to read logs: {}", e));
                     break;
                 }
             }
+        }
+
+        info!("Collected {} lines of logs from container {}", logs.len(), container_id);
+        if logs.is_empty() {
+            warn!("No logs collected from container {} - container may have exited immediately", container_id);
         }
 
         // Wait for container to finish
@@ -168,8 +268,35 @@ impl DockerClient {
             .await;
 
         let exit_code = match wait_result {
-            Some(Ok(result)) => result.status_code,
-            _ => -1,
+            Some(Ok(result)) => {
+                info!("Container {} exited with code: {}", container_id, result.status_code);
+                result.status_code
+            }
+            Some(Err(e)) => {
+                tracing::error!("Failed to wait for container {}: {}", container_id, e);
+                // Try to inspect container to get more info
+                if let Ok(inspect) = self.docker.inspect_container(&container_id, None::<bollard::container::InspectContainerOptions>).await {
+                    if let Some(state) = inspect.state {
+                        tracing::error!("Container state: running={:?}, exit_code={:?}, error={:?}",
+                            state.running, state.exit_code, state.error);
+                        if let Some(exit_code) = state.exit_code {
+                            return Ok((container_id, logs));
+                        }
+                    }
+                }
+                -1
+            }
+            None => {
+                tracing::error!("Container {} wait returned None (container may have been killed)", container_id);
+                // Try to inspect container to get more info
+                if let Ok(inspect) = self.docker.inspect_container(&container_id, None::<bollard::container::InspectContainerOptions>).await {
+                    if let Some(state) = inspect.state {
+                        tracing::error!("Container state: running={:?}, exit_code={:?}, error={:?}",
+                            state.running, state.exit_code, state.error);
+                    }
+                }
+                -1
+            }
         };
 
         // Remove container
@@ -209,6 +336,10 @@ impl DockerClient {
         let _ = self.stop_container(&container_name).await;
         let _ = self.remove_container(&container_name).await;
 
+        // Convert container path to host path for DOOD
+        let host_output = self.to_host_path(&output_path);
+        info!("Runtime container mount: {} (host: {})", output_path.display(), host_output.display());
+
         let mut port_bindings = HashMap::new();
         port_bindings.insert(
             "8080/tcp".to_string(),
@@ -223,9 +354,8 @@ impl DockerClient {
             cmd: Some(vec!["/bin/sh".to_string(), "-c".to_string(), command.to_string()]),
             working_dir: Some("/app".to_string()),
             host_config: Some(bollard::models::HostConfig {
-                binds: Some(vec![format!("{}:/app:ro", output_path.display())]),
+                binds: Some(vec![format!("{}:/app:ro", host_output.display())]),
                 port_bindings: Some(port_bindings),
-                network_mode: Some("bridge".to_string()),
                 restart_policy: Some(bollard::models::RestartPolicy {
                     name: Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED),
                     ..Default::default()
@@ -255,6 +385,19 @@ impl DockerClient {
 
         let container_id = container.id.clone();
 
+        // Connect to easycicd network
+        info!("Connecting runtime container to easycicd network");
+        self.docker
+            .connect_network(
+                "easycicd_easycicd",
+                bollard::network::ConnectNetworkOptions {
+                    container: container_id.as_str(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("Failed to connect container to network")?;
+
         info!("Starting runtime container: {}", container_id);
         self.docker
             .start_container(&container_id, None::<StartContainerOptions<&str>>)
@@ -262,6 +405,11 @@ impl DockerClient {
             .context("Failed to start runtime container")?;
 
         Ok(container_id)
+    }
+
+    /// Get gateway IP for health checks
+    pub fn gateway_ip(&self) -> &str {
+        &self.gateway_ip
     }
 
     /// Stop container

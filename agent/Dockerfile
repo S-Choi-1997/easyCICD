@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy manifests
-COPY Cargo.toml ./
+COPY agent/Cargo.toml ./
 
 # Create dummy main to cache dependencies
 RUN mkdir -p src && \
@@ -19,8 +19,8 @@ RUN mkdir -p src && \
     rm -rf src
 
 # Copy actual source code
-COPY src ./src
-COPY migrations ./migrations
+COPY agent/src ./src
+COPY agent/migrations ./migrations
 
 # Build the actual binary
 RUN touch src/main.rs && cargo build --release
@@ -42,6 +42,9 @@ COPY --from=builder /build/target/release/lightweight-ci /app/
 
 # Copy migrations
 COPY --from=builder /build/migrations /app/migrations
+
+# Copy frontend files
+COPY ../frontend /app/frontend
 
 # Create data directories
 RUN mkdir -p /data/easycicd
