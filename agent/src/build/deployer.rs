@@ -90,6 +90,7 @@ impl Deployer {
                 &project.runtime_command,
                 output_path,
                 target_port,
+                project.runtime_port as u16,
                 project.id,
                 &target_slot.to_string().to_lowercase(),
             )

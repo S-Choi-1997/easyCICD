@@ -13,6 +13,7 @@ pub struct ProjectConfig {
     pub runtime_command: String,
     pub health_check_url: String,
     pub working_directory: Option<String>,
+    pub runtime_port: u16,  // 컨테이너 내부에서 앱이 listen하는 포트
 }
 
 #[derive(Debug, Clone)]
@@ -67,26 +68,51 @@ impl ProjectDetector {
             .collect();
 
         // Check for GitHub Actions workflow first (highest priority - most accurate build info)
-        let workflow_prefix = workflow_path.unwrap_or(".github/workflows/");
+        // workflow_prefix는 path_filter를 고려해야 함
+        let workflow_prefix = if let Some(filter) = path_filter {
+            format!("{}/.github/workflows/", filter.trim_end_matches('/'))
+        } else {
+            workflow_path.unwrap_or(".github/workflows/").to_string()
+        };
+
+        eprintln!("🔍 [DEBUG] path_filter: {:?}", path_filter);
+        eprintln!("🔍 [DEBUG] Searching for workflow files with prefix: {}", workflow_prefix);
+        eprintln!("🔍 [DEBUG] Total files found: {}", files.len());
+        eprintln!("🔍 [DEBUG] First 5 files: {:?}", files.iter().take(5).collect::<Vec<_>>());
+
         let workflow_files: Vec<&String> = files.iter()
-            .filter(|f| f.starts_with(workflow_prefix) && (f.ends_with(".yml") || f.ends_with(".yaml")))
+            .filter(|f| f.contains(".github/workflows/") && (f.ends_with(".yml") || f.ends_with(".yaml")))
             .collect();
 
+        eprintln!("🔍 [DEBUG] Workflow files found: {:?}", workflow_files);
+
+        // Priority 1: GitHub Actions workflow (가장 정확함)
         if !workflow_files.is_empty() {
-            if let Ok(mut config) = self.detect_from_github_actions(owner, repo, branch, &workflow_files).await {
-                config.working_directory = working_directory.clone();
-                return Ok(config);
+            eprintln!("✅ [DEBUG] Found {} workflow file(s), attempting to parse...", workflow_files.len());
+            match self.detect_from_github_actions(owner, repo, branch, &workflow_files).await {
+                Ok(mut config) => {
+                    eprintln!("✅ [DEBUG] Successfully created config from workflow!");
+                    config.working_directory = working_directory.clone();
+                    return Ok(config);
+                }
+                Err(e) => {
+                    eprintln!("❌ [DEBUG] Workflow parsing failed: {}", e);
+                    // 워크플로우가 있는데 파싱 실패 = 명확한 에러
+                    return Err(format!("워크플로우 파일이 있지만 설정을 생성할 수 없습니다: {}", e));
+                }
             }
+        } else {
+            eprintln!("⚠️  [DEBUG] No workflow files found, will try fallback methods");
         }
 
-        // Check for Dockerfile (second priority)
+        // Priority 2: Dockerfile
         if files.iter().any(|f| f.ends_with("Dockerfile") || f.ends_with("dockerfile")) {
             let mut config = self.detect_from_dockerfile(owner, repo, branch, path_filter).await?;
             config.working_directory = working_directory.clone();
             return Ok(config);
         }
 
-        // Detect by project files
+        // Priority 3: Fallback - 프로젝트 파일 기반 추측 (워크플로우 없을 때만)
         if files.iter().any(|f| f.ends_with("package.json")) {
             let mut config = self.detect_nodejs(&files).await?;
             config.working_directory = working_directory.clone();
@@ -134,6 +160,9 @@ impl ProjectDetector {
     }
 
     async fn detect_nodejs(&self, files: &[String]) -> Result<ProjectConfig, String> {
+        // 🔍 FALLBACK 경로 - 워크플로우가 없을 때만 사용되어야 함
+        eprintln!("⚠️  detect_nodejs() FALLBACK이 호출되었습니다!");
+
         // Check if it's a frontend or backend project
         let has_src = files.iter().any(|f| f.contains("/src/"));
         let has_public = files.iter().any(|f| f.contains("/public/"));
@@ -150,6 +179,7 @@ impl ProjectDetector {
                 runtime_command: "nginx -c /app/nginx.conf".to_string(),
                 health_check_url: "/".to_string(),
                 working_directory: None,
+                runtime_port: 80,
             })
         } else {
             // Backend project (Express, NestJS, etc.)
@@ -162,6 +192,7 @@ impl ProjectDetector {
                 runtime_command: "node dist/index.js".to_string(),
                 health_check_url: "/health".to_string(),
                 working_directory: None,
+                runtime_port: 3000,
             })
         }
     }
@@ -176,6 +207,7 @@ impl ProjectDetector {
             runtime_command: "java -jar app.jar".to_string(),
             health_check_url: "/actuator/health".to_string(),
             working_directory: None,
+            runtime_port: 8080,
         })
     }
 
@@ -189,6 +221,7 @@ impl ProjectDetector {
             runtime_command: "java -jar app.jar".to_string(),
             health_check_url: "/actuator/health".to_string(),
             working_directory: None,
+            runtime_port: 8080,
         })
     }
 
@@ -202,6 +235,7 @@ impl ProjectDetector {
             runtime_command: "./app".to_string(),
             health_check_url: "/health".to_string(),
             working_directory: None,
+            runtime_port: 8080,
         })
     }
 
@@ -215,6 +249,7 @@ impl ProjectDetector {
             runtime_command: "./app".to_string(),
             health_check_url: "/health".to_string(),
             working_directory: None,
+            runtime_port: 8080,
         })
     }
 
@@ -242,6 +277,7 @@ impl ProjectDetector {
             runtime_command,
             health_check_url: "/health".to_string(),
             working_directory: None,
+            runtime_port: 8000,
         })
     }
 
@@ -256,6 +292,7 @@ impl ProjectDetector {
             runtime_command: "nginx -c /app/nginx.conf".to_string(),
             health_check_url: "/".to_string(),
             working_directory: None,
+            runtime_port: 80,
         })
     }
 
@@ -277,6 +314,7 @@ impl ProjectDetector {
             runtime_command: "".to_string(),
             health_check_url: "/".to_string(),
             working_directory: None,
+            runtime_port: 8080,  // Dockerfile 기반 프로젝트 기본 포트
         })
     }
 
@@ -307,30 +345,69 @@ impl ProjectDetector {
 
         // Try to parse workflows in priority order
         for workflow_path in sorted_workflows.iter().take(5) {
-            if let Ok(content) = self.client.get_file_content(owner, repo, workflow_path, branch).await {
-                // Check if workflow is active and relevant
-                if let Ok(true) = WorkflowParser::is_active_for_branch(&content, branch) {
-                    // Parse workflow to extract actual information
-                    if let Ok(workflow_info) = WorkflowParser::parse(&content) {
-                        // Build config from parsed information (no assumptions)
-                        if let Ok(builder_config) = ConfigBuilder::from_workflow(&workflow_info) {
-                            // Convert to ProjectConfig
-                            return Ok(ProjectConfig {
-                                project_type: builder_config.project_type,
-                                build_image: builder_config.build_image,
-                                build_command: builder_config.build_command,
-                                cache_type: builder_config.cache_type,
-                                runtime_image: builder_config.runtime_image,
-                                runtime_command: builder_config.runtime_command,
-                                health_check_url: builder_config.health_check_url,
-                                working_directory: builder_config.working_directory,
-                            });
+            eprintln!("📄 [DEBUG] Trying workflow: {}", workflow_path);
+
+            match self.client.get_file_content(owner, repo, workflow_path, branch).await {
+                Ok(content) => {
+                    eprintln!("✅ [DEBUG] Successfully fetched workflow content ({} bytes)", content.len());
+
+                    // Check if workflow is active and relevant
+                    match WorkflowParser::is_active_for_branch(&content, branch) {
+                        Ok(true) => {
+                            eprintln!("✅ [DEBUG] Workflow is active for branch '{}'", branch);
+
+                            // 새로운 파이프라인: Parser -> Interpreter -> ConfigBuilder
+                            match WorkflowParser::parse(&content) {
+                                Ok(workflow_info) => {
+                                    eprintln!("✅ [DEBUG] Parser succeeded! Found {} setup actions, {} run commands",
+                                        workflow_info.setup_actions.len(),
+                                        workflow_info.run_commands.len());
+
+                                    use super::workflow_interpreter::WorkflowInterpreter;
+                                    use super::config_builder::ConfigBuilder;
+
+                                    // Step 1: WorkflowInfo를 ExecutionPlan으로 해석
+                                    match WorkflowInterpreter::interpret(&workflow_info) {
+                                        Ok(execution_plan) => {
+                                            eprintln!("✅ [DEBUG] Interpreter succeeded! Project type: {:?}, {} tasks",
+                                                execution_plan.project_type,
+                                                execution_plan.tasks.len());
+
+                                            // Step 2: ExecutionPlan을 ProjectConfig로 변환
+                                            match ConfigBuilder::build(&execution_plan) {
+                                                Ok(config) => {
+                                                    eprintln!("✅ [DEBUG] ConfigBuilder succeeded!");
+                                                    return Ok(config);
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("❌ [DEBUG] ConfigBuilder failed: {}", e);
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            eprintln!("❌ [DEBUG] Interpreter failed: {}", e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("❌ [DEBUG] Parser failed: {}", e);
+                                }
+                            }
+                        }
+                        Ok(false) => {
+                            eprintln!("⚠️  [DEBUG] Workflow not active for branch '{}'", branch);
+                        }
+                        Err(e) => {
+                            eprintln!("❌ [DEBUG] Failed to check branch: {}", e);
                         }
                     }
+                }
+                Err(e) => {
+                    eprintln!("❌ [DEBUG] Failed to fetch workflow: {}", e);
                 }
             }
         }
 
-        Err("Could not find active GitHub Actions workflow for this branch".to_string())
+        Err("워크플로우에서 프로젝트 설정을 생성할 수 없습니다. setup-node, setup-java 등의 액션이 필요합니다.".to_string())
     }
 }

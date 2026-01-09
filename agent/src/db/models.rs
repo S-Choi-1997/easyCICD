@@ -84,6 +84,7 @@ pub struct Project {
     pub runtime_image: String,
     pub runtime_command: String,
     pub health_check_url: String,
+    pub runtime_port: i32,  // 컨테이너 내부에서 앱이 listen하는 포트
 
     // Port allocation
     pub blue_port: i32,
@@ -179,6 +180,7 @@ pub struct CreateProject {
     pub runtime_image: String,
     pub runtime_command: String,
     pub health_check_url: String,
+    pub runtime_port: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

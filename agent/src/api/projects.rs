@@ -58,6 +58,7 @@ struct CreateProjectRequest {
     runtime_image: String,
     runtime_command: String,
     health_check_url: String,
+    runtime_port: i32,
 }
 
 async fn create_project(
@@ -76,6 +77,7 @@ async fn create_project(
         runtime_image: req.runtime_image,
         runtime_command: req.runtime_command,
         health_check_url: req.health_check_url,
+        runtime_port: req.runtime_port,
     };
 
     match state.db.create_project(create_project).await {

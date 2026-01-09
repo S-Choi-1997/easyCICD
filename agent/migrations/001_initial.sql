@@ -12,11 +12,13 @@ CREATE TABLE IF NOT EXISTS projects (
     build_image TEXT NOT NULL,
     build_command TEXT NOT NULL,
     cache_type TEXT NOT NULL,
+    working_directory TEXT,
 
     -- Deploy configuration
     runtime_image TEXT NOT NULL,
     runtime_command TEXT NOT NULL,
     health_check_url TEXT NOT NULL,
+    runtime_port INTEGER NOT NULL DEFAULT 8080,
 
     -- Port allocation
     blue_port INTEGER NOT NULL,

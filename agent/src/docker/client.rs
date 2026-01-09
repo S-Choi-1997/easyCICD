@@ -325,6 +325,7 @@ impl DockerClient {
         command: &str,
         output_path: PathBuf,
         port: u16,
+        runtime_port: u16,
         project_id: i64,
         slot: &str,
     ) -> Result<String> {
@@ -340,9 +341,11 @@ impl DockerClient {
         let host_output = self.to_host_path(&output_path);
         info!("Runtime container mount: {} (host: {})", output_path.display(), host_output.display());
 
+        let container_port_str = format!("{}/tcp", runtime_port);
+
         let mut port_bindings = HashMap::new();
         port_bindings.insert(
-            "8080/tcp".to_string(),
+            container_port_str.clone(),
             Some(vec![bollard::models::PortBinding {
                 host_ip: Some("0.0.0.0".to_string()),
                 host_port: Some(port.to_string()),
@@ -353,6 +356,7 @@ impl DockerClient {
             image: Some(image.to_string()),
             cmd: Some(vec!["/bin/sh".to_string(), "-c".to_string(), command.to_string()]),
             working_dir: Some("/app".to_string()),
+            env: Some(vec![format!("PORT={}", runtime_port)]),  // Apps can read PORT env var
             host_config: Some(bollard::models::HostConfig {
                 binds: Some(vec![format!("{}:/app:ro", host_output.display())]),
                 port_bindings: Some(port_bindings),
@@ -364,7 +368,7 @@ impl DockerClient {
             }),
             exposed_ports: Some({
                 let mut map = HashMap::new();
-                map.insert("8080/tcp".to_string(), HashMap::new());
+                map.insert(container_port_str.clone(), HashMap::new());
                 map
             }),
             ..Default::default()

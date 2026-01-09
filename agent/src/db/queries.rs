@@ -60,20 +60,6 @@ impl Database {
             mark_applied(2).await?;
         }
 
-        // Migration 3: GitHub PAT
-        if !is_applied(3).await? {
-            let migration3 = include_str!("../../migrations/003_github_pat.sql");
-            sqlx::raw_sql(migration3).execute(&self.pool).await?;
-            mark_applied(3).await?;
-        }
-
-        // Migration 4: Working directory
-        if !is_applied(4).await? {
-            let migration4 = include_str!("../../migrations/004_working_directory.sql");
-            sqlx::raw_sql(migration4).execute(&self.pool).await?;
-            mark_applied(4).await?;
-        }
-
         Ok(())
     }
 
@@ -143,9 +129,9 @@ impl Database {
             INSERT INTO projects (
                 name, repo, path_filter, branch,
                 build_image, build_command, cache_type, working_directory,
-                runtime_image, runtime_command, health_check_url,
+                runtime_image, runtime_command, health_check_url, runtime_port,
                 blue_port, green_port, active_slot
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Blue')
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Blue')
             "#
         )
         .bind(&project.name)
@@ -159,6 +145,7 @@ impl Database {
         .bind(&project.runtime_image)
         .bind(&project.runtime_command)
         .bind(&project.health_check_url)
+        .bind(&project.runtime_port)
         .bind(blue_port)
         .bind(green_port)
         .execute(&self.pool)

@@ -168,7 +168,8 @@ build_command = "${config.build_command || ''}"
 # 실행 설정
 runtime_image = "${config.runtime_image || ''}"
 runtime_command = "${config.runtime_command || ''}"
-health_check_url = "${config.health_check_url || ''}"`;
+health_check_url = "${config.health_check_url || ''}"
+runtime_port = "${config.runtime_port || 8080}"`;
     }
 
     // Parse TOML string to config object (simple parser)
@@ -232,6 +233,7 @@ health_check_url = "${config.health_check_url || ''}"`;
             runtime_image: config.runtime_image,
             runtime_command: config.runtime_command || '',
             health_check_url: config.health_check_url || '/',
+            runtime_port: config.runtime_port || 8080,
         };
 
         try {

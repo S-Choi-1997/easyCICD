@@ -1,274 +1,291 @@
-use super::workflow_parser::{WorkflowInfo, SetupActionType};
+use super::workflow_interpreter::{ExecutionPlan, ProjectType, TaskType};
+use super::detector::ProjectConfig;
 
-#[derive(Debug, Clone)]
-pub struct ProjectConfig {
-    pub project_type: String,
-    pub build_image: String,
-    pub build_command: String,
-    pub cache_type: String,
-    pub runtime_image: String,
-    pub runtime_command: String,
-    pub health_check_url: String,
-    pub working_directory: Option<String>,
-}
+// =============================================================================
+// ConfigBuilder
+// =============================================================================
 
+/// ExecutionPlan을 ProjectConfig로 변환합니다.
+///
+/// # 역할
+/// - ExecutionPlan의 정보를 빌드 시스템이 이해하는 형식으로 변환
+/// - Docker 이미지, 빌드 커맨드, 런타임 커맨드 생성
+///
+/// # 규칙
+/// - ExecutionPlan에 있는 정보만 사용
+/// - 가정이나 임의 판단 최소화
 pub struct ConfigBuilder;
 
 impl ConfigBuilder {
-    /// Build configuration from parsed workflow information
-    /// Only uses what's actually in the workflow - NO ASSUMPTIONS
-    pub fn from_workflow(info: &WorkflowInfo) -> Result<ProjectConfig, String> {
-        // Find the primary language setup
-        let (setup_type, setup_action) = info.setup_actions
-            .iter()
-            .next()
-            .ok_or("No setup action found in workflow")?;
+    /// ExecutionPlan을 ProjectConfig로 변환
+    pub fn build(plan: &ExecutionPlan) -> Result<ProjectConfig, String> {
+        let project_type_str = Self::format_project_type(&plan.project_type);
 
-        match setup_action.action_type {
-            SetupActionType::Java => Self::build_java_config(info, setup_action),
-            SetupActionType::Node => Self::build_node_config(info, setup_action),
-            SetupActionType::Python => Self::build_python_config(info, setup_action),
-            SetupActionType::Go => Self::build_go_config(info, setup_action),
-            SetupActionType::Rust => Self::build_rust_config(info, setup_action),
-            _ => Err("Unsupported language setup action".to_string()),
-        }
-    }
+        let (build_image, runtime_image) = Self::determine_images(plan)?;
 
-    fn build_java_config(
-        info: &WorkflowInfo,
-        setup: &super::workflow_parser::SetupAction,
-    ) -> Result<ProjectConfig, String> {
-        let version = setup.version.as_deref().unwrap_or("17");
+        let build_command = Self::generate_build_command(plan)?;
 
-        // Determine if Gradle or Maven from actual commands
-        let is_gradle = info.build_commands.iter().any(|cmd|
-            cmd.contains("gradle") || cmd.contains("gradlew")
-        );
-        let is_maven = info.build_commands.iter().any(|cmd|
-            cmd.contains("mvn")
-        );
+        let runtime_command = Self::generate_runtime_command(plan)?;
 
-        if !is_gradle && !is_maven {
-            return Err("No Gradle or Maven build command found in workflow".to_string());
-        }
-
-        // Build image based on actual tool
-        let build_image = if is_gradle {
-            format!("gradle:8-jdk{}", version)
-        } else {
-            format!("maven:3.9-eclipse-temurin-{}", version)
-        };
-
-        // Use actual build commands from workflow
-        let build_command = if !info.build_commands.is_empty() {
-            // Use the actual commands but ensure output copy
-            let cmds = info.build_commands.join(" && ");
-            // Add output copy if not present
-            if cmds.contains("/output") {
-                cmds
-            } else if is_gradle {
-                // Exclude *-plain.jar files that Spring Boot 2.5+ generates
-                format!("{} && find build/libs -name '*.jar' ! -name '*-plain.jar' -exec cp {{}} /output/app.jar \\;", cmds)
-            } else {
-                format!("{} && cp target/*.jar /output/app.jar", cmds)
-            }
-        } else {
-            return Err("No build commands found in workflow".to_string());
-        };
-
-        // Runtime image from distribution
-        let runtime_image = match setup.distribution.as_deref() {
-            Some("temurin") | Some("adopt") | Some("adoptium") => {
-                format!("eclipse-temurin:{}-jre", version)
-            }
-            Some("corretto") => format!("amazoncorretto:{}", version),
-            Some("zulu") => format!("azul/zulu-openjdk:{}-jre", version),
-            Some(other) => {
-                return Err(format!("Unknown Java distribution: {}", other));
-            }
-            None => {
-                return Err("Java distribution not specified in workflow".to_string());
-            }
-        };
+        let health_check_url = Self::determine_health_check(&plan.project_type);
 
         Ok(ProjectConfig {
-            project_type: format!("Java ({})", if is_gradle { "Gradle" } else { "Maven" }),
+            project_type: project_type_str,
             build_image,
             build_command,
-            cache_type: if is_gradle { "gradle" } else { "maven" }.to_string(),
+            cache_type: Self::determine_cache_type(&plan.runtime.language),
             runtime_image,
-            runtime_command: "java -jar app.jar".to_string(),
-            health_check_url: "/actuator/health".to_string(),
-            working_directory: None,
-        })
-    }
-
-    fn build_node_config(
-        info: &WorkflowInfo,
-        setup: &super::workflow_parser::SetupAction,
-    ) -> Result<ProjectConfig, String> {
-        let version = setup.version.as_deref().unwrap_or("20");
-
-        if info.build_commands.is_empty() {
-            return Err("No build commands found in workflow".to_string());
-        }
-
-        // Check if it's a static site or server app
-        // Backend indicators: node execution commands
-        let is_backend = info.run_commands.iter().any(|cmd|
-            cmd.contains("node ") ||  // node src/index.js, node dist/index.js, etc.
-            cmd.contains("npm start") ||
-            cmd.contains("npm run start") ||
-            cmd.contains("npm run dev")
-        );
-
-        // Static site indicators: build tools without node execution
-        let is_static = !is_backend && info.run_commands.iter().any(|cmd|
-            cmd.contains("vite build") ||
-            cmd.contains("webpack") ||
-            cmd.contains("gh-pages")
-        );
-
-        // Determine build command based on project type
-        let build_command = if is_backend {
-            // Backend: install dependencies and copy source code
-            "npm ci && cp -r src package*.json /output/".to_string()
-        } else {
-            // Frontend: use workflow build commands
-            let cmds = info.build_commands.join(" && ");
-            if cmds.contains("/output") {
-                cmds
-            } else {
-                format!("{} && cp -r dist/* /output/ 2>/dev/null || cp -r build/* /output/", cmds)
-            }
-        };
-
-        // Extract runtime command for backend
-        let runtime_command = if is_static {
-            "nginx -c /app/nginx.conf".to_string()
-        } else {
-            // Try to find actual node execution command from workflow
-            let node_cmd = info.run_commands.iter()
-                .find(|cmd| cmd.contains("node "))
-                .and_then(|cmd| {
-                    // Extract "node xxx.js" from multiline command
-                    cmd.lines()
-                        .map(|line| line.trim())
-                        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-                        .find(|line| line.starts_with("node "))
-                        .map(|line| {
-                            // Remove any trailing characters like & or ;
-                            line.split_whitespace()
-                                .take_while(|part| !part.starts_with('#') && *part != "&" && *part != ";")
-                                .collect::<Vec<_>>()
-                                .join(" ")
-                        })
-                });
-
-            node_cmd.unwrap_or_else(|| "node dist/index.js".to_string())
-        };
-
-        Ok(ProjectConfig {
-            project_type: format!("Node.js {}", if is_static { "(Static)" } else { "(Server)" }),
-            build_image: format!("node:{}", version),
-            build_command,
-            cache_type: "npm".to_string(),
-            runtime_image: if is_static {
-                "nginx:alpine".to_string()
-            } else {
-                format!("node:{}-slim", version)
-            },
             runtime_command,
-            health_check_url: "/".to_string(),
-            working_directory: None,
+            health_check_url,
+            working_directory: None, // detector가 별도로 설정
+            runtime_port: plan.detected_port.unwrap_or_else(|| Self::determine_default_port(&plan.project_type)),
         })
     }
 
-    fn build_python_config(
-        info: &WorkflowInfo,
-        setup: &super::workflow_parser::SetupAction,
-    ) -> Result<ProjectConfig, String> {
-        let version = setup.version.as_deref().unwrap_or("3.11");
+    // =========================================================================
+    // Private: 이미지 결정
+    // =========================================================================
 
-        if info.build_commands.is_empty() && info.run_commands.is_empty() {
-            return Err("No commands found in workflow".to_string());
-        }
-
-        let build_command = if !info.build_commands.is_empty() {
-            info.build_commands.join(" && ")
-        } else {
-            "pip install -r requirements.txt && cp -r . /output/".to_string()
-        };
-
-        Ok(ProjectConfig {
-            project_type: "Python".to_string(),
-            build_image: format!("python:{}", version),
-            build_command,
-            cache_type: "pip".to_string(),
-            runtime_image: format!("python:{}-slim", version),
-            runtime_command: "python main.py".to_string(),
-            health_check_url: "/health".to_string(),
-            working_directory: None,
-        })
-    }
-
-    fn build_go_config(
-        info: &WorkflowInfo,
-        setup: &super::workflow_parser::SetupAction,
-    ) -> Result<ProjectConfig, String> {
-        let version = setup.version.as_deref().unwrap_or("1.21");
-
-        if info.build_commands.is_empty() {
-            return Err("No build commands found in workflow".to_string());
-        }
-
-        let build_command = {
-            let cmds = info.build_commands.join(" && ");
-            if cmds.contains("/output") {
-                cmds
-            } else {
-                format!("{} && cp app /output/", cmds)
+    fn determine_images(plan: &ExecutionPlan) -> Result<(String, String), String> {
+        match plan.runtime.language.as_str() {
+            "node" => {
+                let version = &plan.runtime.version;
+                let build_image = format!("node:{}", version);
+                let runtime_image = match plan.project_type {
+                    ProjectType::NodeJsFrontend => "nginx:alpine".to_string(),
+                    ProjectType::NodeJsBackend => format!("node:{}-slim", version),
+                    _ => format!("node:{}-slim", version),
+                };
+                Ok((build_image, runtime_image))
             }
-        };
-
-        Ok(ProjectConfig {
-            project_type: "Go".to_string(),
-            build_image: format!("golang:{}", version),
-            build_command,
-            cache_type: "go".to_string(),
-            runtime_image: "debian:bookworm-slim".to_string(),
-            runtime_command: "./app".to_string(),
-            health_check_url: "/health".to_string(),
-            working_directory: None,
-        })
+            "java" => {
+                let version = &plan.runtime.version;
+                Ok((
+                    format!("gradle:8-jdk{}", version),
+                    format!("eclipse-temurin:{}-jre", version),
+                ))
+            }
+            "python" => {
+                let version = &plan.runtime.version;
+                Ok((
+                    format!("python:{}", version),
+                    format!("python:{}-slim", version),
+                ))
+            }
+            "go" => {
+                let version = &plan.runtime.version;
+                Ok((
+                    format!("golang:{}", version),
+                    "gcr.io/distroless/base-debian11".to_string(),
+                ))
+            }
+            lang => Err(format!("지원하지 않는 언어: {}", lang)),
+        }
     }
 
-    fn build_rust_config(
-        info: &WorkflowInfo,
-        setup: &super::workflow_parser::SetupAction,
-    ) -> Result<ProjectConfig, String> {
-        if info.build_commands.is_empty() {
-            return Err("No build commands found in workflow".to_string());
+    // =========================================================================
+    // Private: 빌드 커맨드 생성
+    // =========================================================================
+
+    fn generate_build_command(plan: &ExecutionPlan) -> Result<String, String> {
+        let mut commands = Vec::new();
+
+        // 1. 의존성 설치
+        for task in &plan.tasks {
+            if task.task_type == TaskType::InstallDependencies {
+                commands.push(task.command.clone());
+            }
         }
 
-        let build_command = {
-            let cmds = info.build_commands.join(" && ");
-            if cmds.contains("/output") {
-                cmds
-            } else {
-                format!("{} && find target/release -maxdepth 1 -type f -executable -exec cp {{}} /output/ \\;", cmds)
+        // 2. 빌드 (Frontend만)
+        if plan.project_type != ProjectType::NodeJsBackend {
+            for task in &plan.tasks {
+                if task.task_type == TaskType::Build {
+                    commands.push(task.command.clone());
+                }
             }
+        }
+
+        // 3. 출력 복사 (프로젝트 타입에 따라)
+        commands.push(Self::generate_copy_command(plan));
+
+        if commands.is_empty() {
+            return Err("워크플로우에서 빌드 커맨드를 찾을 수 없습니다".to_string());
+        }
+
+        Ok(commands.join(" && "))
+    }
+
+    fn generate_copy_command(plan: &ExecutionPlan) -> String {
+        match plan.project_type {
+            ProjectType::NodeJsBackend => {
+                // Backend: 소스 코드, 의존성, package.json 복사
+                "cp -r src node_modules package*.json /output/".to_string()
+            }
+            ProjectType::NodeJsFrontend => {
+                // Frontend: 빌드 결과물 복사
+                "cp -r dist/* /output/ 2>/dev/null || cp -r build/* /output/".to_string()
+            }
+            ProjectType::JavaSpringBoot => {
+                // JAR 파일 찾아서 복사
+                "find build/libs target -name '*.jar' ! -name '*-plain.jar' -exec cp {} /output/app.jar \\; 2>/dev/null || true".to_string()
+            }
+            ProjectType::PythonDjango => {
+                // Python 소스 전체 복사
+                "cp -r . /output/".to_string()
+            }
+            ProjectType::GolangApi => {
+                // 컴파일된 바이너리 복사
+                "cp main /output/ 2>/dev/null || cp app /output/".to_string()
+            }
+            ProjectType::RustCargo => {
+                // Rust 바이너리 복사
+                "cp target/release/* /output/ 2>/dev/null || true".to_string()
+            }
+            ProjectType::Unknown => {
+                // 기본: dist 또는 build 폴더
+                "cp -r dist/* /output/ 2>/dev/null || cp -r build/* /output/ 2>/dev/null || cp -r . /output/".to_string()
+            }
+        }
+    }
+
+    // =========================================================================
+    // Private: 런타임 커맨드 생성
+    // =========================================================================
+
+    fn generate_runtime_command(plan: &ExecutionPlan) -> Result<String, String> {
+        match plan.project_type {
+            ProjectType::NodeJsFrontend => {
+                Ok("nginx -c /app/nginx.conf".to_string())
+            }
+            ProjectType::NodeJsBackend => {
+                // 워크플로우에서 "node xxx.js" 커맨드 찾기
+                let node_cmd = plan.tasks.iter()
+                    .find(|t| t.command.contains("node ") && t.command.contains(".js"))
+                    .and_then(|t| Self::extract_node_command(&t.command));
+
+                Ok(node_cmd.unwrap_or_else(|| "node src/index.js".to_string()))
+            }
+            ProjectType::JavaSpringBoot => {
+                Ok("java -jar /app/app.jar".to_string())
+            }
+            ProjectType::PythonDjango => {
+                Ok("python manage.py runserver 0.0.0.0:8000".to_string())
+            }
+            ProjectType::GolangApi => {
+                Ok("./main".to_string())
+            }
+            ProjectType::RustCargo => {
+                Ok("./main".to_string())
+            }
+            ProjectType::Unknown => {
+                Err("프로젝트 타입을 알 수 없어 런타임 커맨드를 생성할 수 없습니다".to_string())
+            }
+        }
+    }
+
+    /// "node src/index.js &" 같은 커맨드에서 "node src/index.js" 추출
+    fn extract_node_command(command: &str) -> Option<String> {
+        command
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .find(|line| line.starts_with("node "))
+            .map(|line| {
+                // "node src/index.js &" -> "node src/index.js"
+                line.split_whitespace()
+                    .take_while(|part| !part.starts_with('#') && *part != "&" && *part != ";")
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+    }
+
+    // =========================================================================
+    // Private: 기타 헬퍼
+    // =========================================================================
+
+    fn format_project_type(project_type: &ProjectType) -> String {
+        match project_type {
+            ProjectType::NodeJsBackend => "Node.js (Backend)".to_string(),
+            ProjectType::NodeJsFrontend => "Node.js (Frontend)".to_string(),
+            ProjectType::JavaSpringBoot => "Java (Spring Boot)".to_string(),
+            ProjectType::PythonDjango => "Python (Django)".to_string(),
+            ProjectType::GolangApi => "Go (API)".to_string(),
+            ProjectType::RustCargo => "Rust (Cargo)".to_string(),
+            ProjectType::Unknown => "Unknown".to_string(),
+        }
+    }
+
+    fn determine_cache_type(language: &str) -> String {
+        match language {
+            "node" => "npm".to_string(),
+            "java" => "gradle".to_string(),
+            "python" => "pip".to_string(),
+            "go" => "go".to_string(),
+            _ => "none".to_string(),
+        }
+    }
+
+    fn determine_health_check(project_type: &ProjectType) -> String {
+        match project_type {
+            ProjectType::NodeJsBackend => "/health".to_string(),
+            ProjectType::JavaSpringBoot => "/actuator/health".to_string(),
+            ProjectType::PythonDjango => "/health/".to_string(),
+            _ => "/".to_string(),
+        }
+    }
+
+    fn determine_default_port(project_type: &ProjectType) -> u16 {
+        match project_type {
+            ProjectType::NodeJsBackend => 3000,       // Express, Fastify 등 기본 포트
+            ProjectType::NodeJsFrontend => 80,        // nginx 기본 포트
+            ProjectType::JavaSpringBoot => 8080,      // Spring Boot 기본 포트
+            ProjectType::PythonDjango => 8000,        // Django 기본 포트
+            ProjectType::GolangApi => 8080,           // Go 일반적인 포트
+            ProjectType::RustCargo => 8080,           // Rust 일반적인 포트
+            ProjectType::Unknown => 8080,             // 기본값
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::github::workflow_interpreter::{Runtime, Task};
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_build_nodejs_backend_config() {
+        let plan = ExecutionPlan {
+            project_type: ProjectType::NodeJsBackend,
+            runtime: Runtime {
+                language: "node".to_string(),
+                version: "20".to_string(),
+                env: HashMap::new(),
+            },
+            tasks: vec![
+                Task {
+                    name: "Install".to_string(),
+                    task_type: TaskType::InstallDependencies,
+                    command: "npm ci".to_string(),
+                },
+                Task {
+                    name: "Start".to_string(),
+                    task_type: TaskType::Other,
+                    command: "node src/index.js &".to_string(),
+                },
+            ],
+            detected_port: None,
         };
 
-        Ok(ProjectConfig {
-            project_type: "Rust".to_string(),
-            build_image: "rust:1.75".to_string(),
-            build_command,
-            cache_type: "rust".to_string(),
-            runtime_image: "debian:bookworm-slim".to_string(),
-            runtime_command: "./app".to_string(),
-            health_check_url: "/health".to_string(),
-            working_directory: None,
-        })
+        let config = ConfigBuilder::build(&plan).unwrap();
+
+        assert_eq!(config.project_type, "Node.js (Backend)");
+        assert_eq!(config.build_image, "node:20");
+        assert_eq!(config.runtime_image, "node:20-slim");
+        assert!(config.build_command.contains("npm ci"));
+        assert!(config.build_command.contains("cp -r src"));
+        assert_eq!(config.runtime_command, "node src/index.js");
+        assert_eq!(config.runtime_port, 3000); // Default Node.js Backend port
     }
 }
