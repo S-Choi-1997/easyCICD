@@ -227,7 +227,7 @@ health_check_url = "${config.health_check_url || ''}"`;
             branch: selectedBranch,
             build_image: config.build_image,
             build_command: config.build_command,
-            cache_type: 'none',  // Always none for manual config
+            cache_type: config.cache_type || 'none',
             working_directory: config.working_directory || null,
             runtime_image: config.runtime_image,
             runtime_command: config.runtime_command || '',

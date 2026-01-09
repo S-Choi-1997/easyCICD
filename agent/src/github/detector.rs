@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use super::GitHubClient;
-use serde_yaml::Value as YamlValue;
+use super::workflow_parser::WorkflowParser;
+use super::config_builder::ConfigBuilder;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
@@ -169,9 +170,9 @@ impl ProjectDetector {
         Ok(ProjectConfig {
             project_type: "Gradle (Spring Boot)".to_string(),
             build_image: "gradle:8-jdk17".to_string(),
-            build_command: "gradle bootJar && cp build/libs/*.jar /output/app.jar".to_string(),
+            build_command: "gradle clean build && find build/libs -name '*.jar' ! -name '*-plain.jar' -exec cp {} /output/app.jar \\;".to_string(),
             cache_type: "gradle".to_string(),
-            runtime_image: "openjdk:17-jre-slim".to_string(),
+            runtime_image: "eclipse-temurin:17-jre".to_string(),
             runtime_command: "java -jar app.jar".to_string(),
             health_check_url: "/actuator/health".to_string(),
             working_directory: None,
@@ -184,7 +185,7 @@ impl ProjectDetector {
             build_image: "maven:3.9-eclipse-temurin-17".to_string(),
             build_command: "mvn clean package -DskipTests && cp target/*.jar /output/app.jar".to_string(),
             cache_type: "maven".to_string(),
-            runtime_image: "openjdk:17-jre-slim".to_string(),
+            runtime_image: "eclipse-temurin:17-jre".to_string(),
             runtime_command: "java -jar app.jar".to_string(),
             health_check_url: "/actuator/health".to_string(),
             working_directory: None,
@@ -308,241 +309,28 @@ impl ProjectDetector {
         for workflow_path in sorted_workflows.iter().take(5) {
             if let Ok(content) = self.client.get_file_content(owner, repo, workflow_path, branch).await {
                 // Check if workflow is active and relevant
-                if let Ok(true) = self.is_workflow_active(&content, branch).await {
-                    if let Ok(config) = self.parse_github_actions_workflow(&content).await {
-                        return Ok(config);
+                if let Ok(true) = WorkflowParser::is_active_for_branch(&content, branch) {
+                    // Parse workflow to extract actual information
+                    if let Ok(workflow_info) = WorkflowParser::parse(&content) {
+                        // Build config from parsed information (no assumptions)
+                        if let Ok(builder_config) = ConfigBuilder::from_workflow(&workflow_info) {
+                            // Convert to ProjectConfig
+                            return Ok(ProjectConfig {
+                                project_type: builder_config.project_type,
+                                build_image: builder_config.build_image,
+                                build_command: builder_config.build_command,
+                                cache_type: builder_config.cache_type,
+                                runtime_image: builder_config.runtime_image,
+                                runtime_command: builder_config.runtime_command,
+                                health_check_url: builder_config.health_check_url,
+                                working_directory: builder_config.working_directory,
+                            });
+                        }
                     }
                 }
             }
         }
 
         Err("Could not find active GitHub Actions workflow for this branch".to_string())
-    }
-
-    /// Check if workflow is active and relevant to the current branch
-    async fn is_workflow_active(&self, content: &str, branch: &str) -> Result<bool, String> {
-        let yaml: YamlValue = serde_yaml::from_str(content)
-            .map_err(|e| format!("Failed to parse YAML: {}", e))?;
-
-        // Check if workflow has 'on:' trigger
-        if let Some(on) = yaml.get("on") {
-            // Simple trigger like "on: push"
-            if on.as_str().is_some() {
-                return Ok(true);
-            }
-
-            // Object trigger like "on: { push: { branches: [...] } }"
-            if let Some(on_map) = on.as_mapping() {
-                // Check for push/pull_request triggers
-                if on_map.contains_key("push") || on_map.contains_key("pull_request") {
-                    // Check branch filters
-                    if let Some(push) = on_map.get("push") {
-                        if let Some(branches) = push.get("branches") {
-                            if let Some(branch_list) = branches.as_sequence() {
-                                // Check if current branch is in the list
-                                for b in branch_list {
-                                    if let Some(branch_name) = b.as_str() {
-                                        if branch_name == branch || branch_name == "**" || branch_name == "*" {
-                                            return Ok(true);
-                                        }
-                                    }
-                                }
-                                // Current branch not in filter list
-                                return Ok(false);
-                            }
-                        }
-                        // No branch filter means all branches
-                        return Ok(true);
-                    }
-                    return Ok(true);
-                }
-            }
-
-            // Array trigger like "on: [push, pull_request]"
-            if let Some(on_array) = on.as_sequence() {
-                for trigger in on_array {
-                    if let Some(trigger_str) = trigger.as_str() {
-                        if trigger_str == "push" || trigger_str == "pull_request" {
-                            return Ok(true);
-                        }
-                    }
-                }
-            }
-        }
-
-        // No valid trigger found
-        Ok(false)
-    }
-
-    /// Parse GitHub Actions workflow YAML
-    async fn parse_github_actions_workflow(&self, content: &str) -> Result<ProjectConfig, String> {
-        let yaml: YamlValue = serde_yaml::from_str(content)
-            .map_err(|e| format!("Failed to parse YAML: {}", e))?;
-
-        let mut build_commands = Vec::new();
-        let mut project_type = "Unknown".to_string();
-        let mut detected_lang = None;
-        let mut is_static_site = false;
-
-        // Extract run commands from jobs
-        if let Some(jobs) = yaml.get("jobs").and_then(|j| j.as_mapping()) {
-            for (_job_name, job) in jobs {
-                if let Some(steps) = job.get("steps").and_then(|s| s.as_sequence()) {
-                    for step in steps {
-                        // Check for GitHub Pages deployment (indicates static site)
-                        if let Some(uses) = step.get("uses").and_then(|u| u.as_str()) {
-                            if uses.contains("gh-pages") || uses.contains("pages-deploy") {
-                                is_static_site = true;
-                            }
-
-                            // Check setup actions for language detection
-                            if uses.contains("setup-node") {
-                                detected_lang = Some("node");
-                            } else if uses.contains("setup-java") {
-                                detected_lang = Some("java");
-                            } else if uses.contains("setup-python") {
-                                detected_lang = Some("python");
-                            } else if uses.contains("setup-go") {
-                                detected_lang = Some("go");
-                            }
-                        }
-
-                        // Extract run commands
-                        if let Some(run) = step.get("run").and_then(|r| r.as_str()) {
-                            build_commands.push(run.to_string());
-                        }
-                    }
-                }
-            }
-        }
-
-        // Determine project configuration based on detected language and commands
-        let build_command = build_commands.join(" && ");
-
-        match detected_lang {
-            Some("node") => {
-                // Check if it's a static site (GitHub Pages, Vite, etc.)
-                if is_static_site {
-                    project_type = "Static Site (Node.js build)".to_string();
-                    let build_cmd = if build_command.contains("build") {
-                        // Filter out non-build commands and add output copy
-                        // Replace npm ci with npm install for compatibility
-                        let filtered_commands: Vec<String> = build_command
-                            .split(" && ")
-                            .filter(|cmd| {
-                                let cmd_lower = cmd.to_lowercase();
-                                cmd_lower.contains("install") ||
-                                cmd_lower.contains("ci") ||
-                                cmd_lower.contains("build")
-                            })
-                            .map(|cmd| {
-                                // Replace npm ci with npm install
-                                if cmd.trim() == "npm ci" {
-                                    "npm install".to_string()
-                                } else {
-                                    cmd.to_string()
-                                }
-                            })
-                            .collect();
-                        format!("{} && cp -r dist/* /output/", filtered_commands.join(" && "))
-                    } else {
-                        "npm install && npm run build && cp -r dist/* /output/".to_string()
-                    };
-
-                    Ok(ProjectConfig {
-                        project_type,
-                        build_image: "node:20".to_string(),
-                        build_command: build_cmd,
-                        cache_type: "npm".to_string(),
-                        runtime_image: "nginx:alpine".to_string(),
-                        runtime_command: "nginx -c /app/nginx.conf".to_string(),
-                        health_check_url: "/health".to_string(),
-                        working_directory: None,
-                    })
-                } else {
-                    // Node.js server application
-                    project_type = "Node.js (from GitHub Actions)".to_string();
-                    Ok(ProjectConfig {
-                        project_type,
-                        build_image: "node:20".to_string(),
-                        build_command: if build_command.contains("build") {
-                            build_command
-                        } else {
-                            "npm install && npm run build".to_string()
-                        },
-                        cache_type: "npm".to_string(),
-                        runtime_image: "node:20-slim".to_string(),
-                        runtime_command: "node dist/index.js".to_string(),
-                        health_check_url: "/health".to_string(),
-                        working_directory: None,
-                    })
-                }
-            }
-            Some("java") => {
-                project_type = "Java (from GitHub Actions)".to_string();
-                let is_gradle = build_command.contains("gradle");
-                Ok(ProjectConfig {
-                    project_type,
-                    build_image: if is_gradle {
-                        "gradle:8-jdk17".to_string()
-                    } else {
-                        "maven:3.9-eclipse-temurin-17".to_string()
-                    },
-                    build_command: if build_command.is_empty() {
-                        if is_gradle {
-                            "gradle bootJar".to_string()
-                        } else {
-                            "mvn clean package -DskipTests".to_string()
-                        }
-                    } else {
-                        build_command
-                    },
-                    cache_type: if is_gradle { "gradle" } else { "maven" }.to_string(),
-                    runtime_image: "openjdk:17-jre-slim".to_string(),
-                    runtime_command: if is_gradle {
-                        "java -jar build/libs/*.jar".to_string()
-                    } else {
-                        "java -jar target/*.jar".to_string()
-                    },
-                    health_check_url: "/actuator/health".to_string(),
-                    working_directory: None,
-                })
-            }
-            Some("python") => {
-                project_type = "Python (from GitHub Actions)".to_string();
-                Ok(ProjectConfig {
-                    project_type,
-                    build_image: "python:3.11".to_string(),
-                    build_command: if build_command.is_empty() {
-                        "pip install -r requirements.txt".to_string()
-                    } else {
-                        build_command
-                    },
-                    cache_type: "pip".to_string(),
-                    runtime_image: "python:3.11-slim".to_string(),
-                    runtime_command: "python main.py".to_string(),
-                    health_check_url: "/health".to_string(),
-                    working_directory: None,
-                })
-            }
-            Some("go") => {
-                project_type = "Go (from GitHub Actions)".to_string();
-                Ok(ProjectConfig {
-                    project_type,
-                    build_image: "golang:1.21".to_string(),
-                    build_command: if build_command.is_empty() {
-                        "go build -o app .".to_string()
-                    } else {
-                        build_command
-                    },
-                    cache_type: "go".to_string(),
-                    runtime_image: "debian:bookworm-slim".to_string(),
-                    runtime_command: "./app".to_string(),
-                    health_check_url: "/health".to_string(),
-                    working_directory: None,
-                })
-            }
-            _ => Err("Could not determine project type from GitHub Actions".to_string()),
-        }
     }
 }

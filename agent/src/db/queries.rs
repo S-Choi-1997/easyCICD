@@ -16,17 +16,63 @@ impl Database {
     }
 
     pub async fn migrate(&self) -> Result<(), sqlx::Error> {
-        let migration1 = include_str!("../../migrations/001_initial.sql");
-        sqlx::raw_sql(migration1).execute(&self.pool).await?;
+        // Create schema_migrations table if not exists
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )"
+        )
+        .execute(&self.pool)
+        .await?;
 
-        let migration2 = include_str!("../../migrations/002_settings.sql");
-        sqlx::raw_sql(migration2).execute(&self.pool).await?;
+        // Helper function to check if migration was applied
+        let is_applied = |version: i32| async move {
+            let result: Option<(i32,)> = sqlx::query_as(
+                "SELECT version FROM schema_migrations WHERE version = ?"
+            )
+            .bind(version)
+            .fetch_optional(&self.pool)
+            .await?;
+            Ok::<bool, sqlx::Error>(result.is_some())
+        };
 
-        let migration3 = include_str!("../../migrations/003_github_pat.sql");
-        sqlx::raw_sql(migration3).execute(&self.pool).await?;
+        // Helper function to mark migration as applied
+        let mark_applied = |version: i32| async move {
+            sqlx::query("INSERT INTO schema_migrations (version) VALUES (?)")
+                .bind(version)
+                .execute(&self.pool)
+                .await?;
+            Ok::<(), sqlx::Error>(())
+        };
 
-        let migration4 = include_str!("../../migrations/004_working_directory.sql");
-        sqlx::raw_sql(migration4).execute(&self.pool).await?;
+        // Migration 1: Initial schema
+        if !is_applied(1).await? {
+            let migration1 = include_str!("../../migrations/001_initial.sql");
+            sqlx::raw_sql(migration1).execute(&self.pool).await?;
+            mark_applied(1).await?;
+        }
+
+        // Migration 2: Settings table
+        if !is_applied(2).await? {
+            let migration2 = include_str!("../../migrations/002_settings.sql");
+            sqlx::raw_sql(migration2).execute(&self.pool).await?;
+            mark_applied(2).await?;
+        }
+
+        // Migration 3: GitHub PAT
+        if !is_applied(3).await? {
+            let migration3 = include_str!("../../migrations/003_github_pat.sql");
+            sqlx::raw_sql(migration3).execute(&self.pool).await?;
+            mark_applied(3).await?;
+        }
+
+        // Migration 4: Working directory
+        if !is_applied(4).await? {
+            let migration4 = include_str!("../../migrations/004_working_directory.sql");
+            sqlx::raw_sql(migration4).execute(&self.pool).await?;
+            mark_applied(4).await?;
+        }
 
         Ok(())
     }
@@ -75,23 +121,31 @@ impl Database {
 
     // Project operations
     pub async fn create_project(&self, project: CreateProject) -> Result<Project, sqlx::Error> {
-        // Calculate ports based on next available project ID
-        let next_id: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) + 1 FROM projects")
-            .fetch_one(&self.pool)
-            .await?;
+        // Find next available ports by checking existing projects
+        // Start from 10002 (10000 is API server, 10001 reserved)
+        let max_port: Option<i32> = sqlx::query_scalar(
+            "SELECT MAX(green_port) FROM projects"
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten(); // Handle NULL result from MAX
 
-        let base_port = 10000;
-        let blue_port = base_port + (next_id as i32 * 2) - 2;
-        let green_port = base_port + (next_id as i32 * 2) - 1;
+        let base_port = match max_port {
+            Some(port) => port + 1, // Next port after highest green_port
+            None => 10002, // First project starts at 10002/10003
+        };
+
+        let blue_port = base_port;
+        let green_port = base_port + 1;
 
         let result = sqlx::query(
             r#"
             INSERT INTO projects (
                 name, repo, path_filter, branch,
-                build_image, build_command, cache_type,
+                build_image, build_command, cache_type, working_directory,
                 runtime_image, runtime_command, health_check_url,
                 blue_port, green_port, active_slot
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Blue')
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Blue')
             "#
         )
         .bind(&project.name)
@@ -101,6 +155,7 @@ impl Database {
         .bind(&project.build_image)
         .bind(&project.build_command)
         .bind(&project.cache_type)
+        .bind(&project.working_directory)
         .bind(&project.runtime_image)
         .bind(&project.runtime_command)
         .bind(&project.health_check_url)
@@ -182,9 +237,8 @@ impl Database {
         .fetch_one(&self.pool)
         .await?;
 
-        // Get project to determine log path
-        let project = self.get_project_by_id(build.project_id).await?;
-        let log_path = format!("/data/easycicd/logs/{}/{}.log", project.name, build_number);
+        // Use project ID for log path (not name, to avoid conflicts and special characters)
+        let log_path = format!("/data/easycicd/logs/{}/{}.log", build.project_id, build_number);
 
         let result = sqlx::query(
             r#"

@@ -113,13 +113,287 @@
 9. Runtime 네트워크: easycicd_easycicd 네트워크 연결
 10. 모노레포 working_directory: path_filter로부터 추출, 빌드 컨테이너 WORKDIR 동적 설정
 
+❌ 문제 9: 모노레포 빌드 실패 - working_directory DB 저장 누락
+--------------------------------------------------------------------------------
+원인: queries.rs의 INSERT 쿼리에 working_directory 컬럼 및 바인딩 파라미터 누락
+증상:
+  - Gradle: "Directory '/app' does not contain a Gradle build"
+  - npm: "ENOENT: no such file or directory, open '/app/package.json'"
+  - 모노레포 프로젝트에서 path_filter="project1" 설정했으나 빌드는 /app에서 실행됨
+
+근본 원인:
+  1. 프론트엔드(Setup.svelte)에서 working_directory 전송 O
+  2. API(projects.rs)에서 working_directory 수신 O
+  3. CreateProject 구조체에 working_directory 필드 O
+  4. INSERT 쿼리에 working_directory 컬럼 X ← 문제
+  5. 결과: 모든 프로젝트 working_directory = NULL
+  6. 빌드 컨테이너는 항상 /app에서 실행
+  7. 모노레포 하위 프로젝트(project1/)의 package.json/build.gradle 찾지 못함
+
+해결:
+  1. INSERT 쿼리에 working_directory 컬럼 추가
+  2. VALUES에 ? 플레이스홀더 추가 (13개에서 14개로)
+  3. .bind(&project.working_directory) 추가
+파일: agent/src/db/queries.rs:89-110
+
+관련 수정 이력:
+  - 004_working_directory.sql 마이그레이션 생성
+  - models.rs에 working_directory 필드 추가 (Project, CreateProject)
+  - docker/client.rs에서 WORKDIR 동적 설정
+  - github/detector.rs에서 path_filter로부터 working_directory 추출
+  - build/executor.rs에서 working_directory 전달
+  - frontend Setup.svelte에서 working_directory 전송
+  - api/projects.rs에서 working_directory 수신 및 전달
+  - queries.rs의 migrate()에 migration4 추가
+
+교훈: 데이터 플로우 전체를 확인해야 함 (Frontend → API → DB → Build Executor → Docker)
+
+❌ 문제 10: 헬스체크 실패 - stale data 문제
+--------------------------------------------------------------------------------
+원인: 헬스체크에서 이미 업데이트된 컨테이너 ID를 확인하지 못함
+배경:
+  - 배포 플로우: 새 컨테이너 시작 → DB에 컨테이너 ID 저장 → 헬스체크 수행
+  - deployer.rs의 deploy() 함수에서 project 변수는 함수 시작 시점의 값
+  - DB에 새 컨테이너 ID를 업데이트해도 project 변수는 여전히 old 값 유지
+  - 헬스체크가 old 컨테이너 ID를 체크하여 실패
+
+증상:
+  - 새 컨테이너가 정상 실행 중인데도 헬스체크 실패
+  - active_slot이 전환되지 않음
+  - 프록시 연결 실패 (이전 슬롯의 컨테이너를 가리킴)
+
+문제 코드 (deployer.rs):
+```rust
+// 새 컨테이너 시작
+let container_id = self.docker.run_runtime_container(...).await?;
+
+// DB 업데이트
+match target_slot {
+    Slot::Blue => {
+        self.state.db.update_project_blue_container(project.id, Some(container_id.clone())).await?;
+    }
+    ...
+}
+
+// ❌ 문제: project는 여전히 old container_id를 가지고 있음
+let health_check_result = self.perform_health_check(project, build, target_port).await;
+
+// perform_health_check 내부에서:
+let container_id = match target_slot {
+    Slot::Blue => project.blue_container_id.as_ref(), // ❌ old value
+    ...
+}
+```
+
+해결:
+  1. perform_health_check에 container_id를 직접 전달
+  2. project 객체에서 읽지 않고 실제 생성된 container_id 사용
+  3. 함수 시그니처 변경:
+     - Before: async fn perform_health_check(&self, project: &Project, build: &Build, port: u16)
+     - After: async fn perform_health_check(&self, project: &Project, build: &Build, container_id: &str)
+
+파일: agent/src/build/deployer.rs
+  - Line 118-120: 헬스체크 호출 시 &container_id 전달
+  - Line 252-310: perform_health_check 함수 시그니처 및 내부 로직 수정
+
+교훈:
+  - In-memory 객체와 DB 상태의 동기화 주의
+  - 중요한 값은 직접 전달하여 stale data 문제 방지
+  - Rust의 소유권 시스템은 이런 버그를 컴파일 타임에 잡지 못함 (논리 오류)
+
+❌ 문제 11: Active Slot 전환 실패 - 헬스체크 컨텍스트 패스
+--------------------------------------------------------------------------------
+원인: HTTP 기반 헬스체크가 특정 URL 경로를 가정
+배경:
+  - Spring Boot 앱이 context path를 사용하는 경우 (예: /api/spring)
+  - 헬스체크 URL: /actuator/health
+  - 실제 URL: /api/spring/actuator/health
+  - 결과: 404 Not Found로 헬스체크 실패
+
+사용자 질문: "context path를 입력받게 하자는 뜻이였어 빌드 설정창에서. 아니면 헬스체크 로직을 바꿀까. 그냥 컨테이너 잘 떴는지 체크같은 느낌으로."
+
+선택: 헬스체크 로직 변경 (context path 필드 추가하지 않음)
+
+해결:
+  1. HTTP 요청 기반 헬스체크 제거
+  2. Docker API를 통한 컨테이너 상태 확인으로 변경
+  3. is_container_running() 사용 (bollard API)
+  4. 10회 재시도, 2초 간격
+  5. Context path 설정 불필요
+
+장점:
+  - 모든 프레임워크/언어에서 동작 (언어 중립적)
+  - Context path, health check endpoint 설정 불필요
+  - 단순하고 명확한 로직
+  - 컨테이너 시작 직후 바로 확인 가능
+
+파일: agent/src/build/deployer.rs:252-310
+```rust
+async fn perform_health_check(&self, project: &Project, build: &Build, container_id: &str) -> Result<()> {
+    let max_attempts = 10;
+    let retry_interval = Duration::from_secs(2);
+
+    for attempt in 1..=max_attempts {
+        // Docker API로 컨테이너 상태 확인
+        let is_running = self.docker.is_container_running(&container_id).await;
+
+        if is_running {
+            info!("Container health check passed on attempt {}/{} - Container is running", attempt, max_attempts);
+            return Ok(());
+        }
+
+        if attempt < max_attempts {
+            sleep(retry_interval).await;
+        }
+    }
+
+    anyhow::bail!("Health check timed out after {} attempts", max_attempts)
+}
+```
+
+교훈:
+  - 복잡한 설정보다 단순한 해결책 선호
+  - 언어/프레임워크 중립적인 방식 선택
+  - 사용자 경험 우선 (추가 설정 최소화)
+
+❌ 문제 12: 컨테이너 상태 불일치 - 시스템 재시작 후
+--------------------------------------------------------------------------------
+원인: 시스템 재시작 후 DB에 저장된 컨테이너 ID가 실제로는 존재하지 않음
+배경:
+  - Agent 컨테이너 재시작 (docker-compose restart)
+  - Runtime 컨테이너들은 삭제됨
+  - DB에는 여전히 삭제된 컨테이너 ID 저장
+  - 배포 시 존재하지 않는 컨테이너를 참조하여 에러
+
+증상:
+  - "Project 'xxx': Blue container abc123 not found, skipping cleanup"
+  - Orphaned container references in database
+  - 배포 시 불필요한 에러 로그
+
+해결:
+  1. 시스템 시작 시 컨테이너 상태 동기화 함수 추가
+  2. 모든 프로젝트의 blue/green 컨테이너 확인
+  3. 존재하지 않는 컨테이너 ID는 DB에서 제거
+  4. 깔끔한 초기 상태로 시작
+
+파일: agent/src/main.rs
+```rust
+// Line 79-82: 시작 시 동기화 호출
+info!("Synchronizing container states...");
+synchronize_container_states(&state, &docker).await?;
+info!("Container state synchronization complete");
+
+// Line 163-200: 동기화 함수
+async fn synchronize_container_states(state: &AppState, docker: &DockerClient) -> Result<()> {
+    let projects = state.db.list_projects().await?;
+
+    for project in projects {
+        let mut needs_update = false;
+        let mut new_blue_id = project.blue_container_id.clone();
+        let mut new_green_id = project.green_container_id.clone();
+
+        // Check Blue container
+        if let Some(blue_id) = &project.blue_container_id {
+            if !docker.is_container_running(blue_id).await {
+                info!("Project '{}': Blue container {} not found, clearing from DB", project.name, blue_id);
+                new_blue_id = None;
+                needs_update = true;
+            }
+        }
+
+        // Check Green container
+        if let Some(green_id) = &project.green_container_id {
+            if !docker.is_container_running(green_id).await {
+                info!("Project '{}': Green container {} not found, clearing from DB", project.name, green_id);
+                new_green_id = None;
+                needs_update = true;
+            }
+        }
+
+        // Update database if needed
+        if needs_update {
+            state.db.update_project_blue_container(project.id, new_blue_id).await?;
+            state.db.update_project_green_container(project.id, new_green_id).await?;
+            info!("Project '{}': Container states synchronized", project.name);
+        }
+    }
+
+    Ok(())
+}
+```
+
+교훈:
+  - 영속성 레이어(DB)와 실제 리소스(컨테이너) 상태 동기화 중요
+  - 시스템 시작 시 일관성 검증 필요
+  - Garbage collection 같은 정리 작업 자동화
+
+❌ 문제 13: 배포 실패 - 타겟 슬롯에 기존 컨테이너 존재
+--------------------------------------------------------------------------------
+원인: 타겟 슬롯에 기존 컨테이너가 남아있어 포트 충돌
+배경:
+  - 이전 배포가 실패한 경우
+  - 헬스체크 실패로 롤백하지 않은 경우 (디버깅 모드)
+  - 타겟 슬롯에 이미 컨테이너가 실행 중
+  - 동일한 포트로 새 컨테이너 시작 시도 → 포트 충돌
+
+사용자 요구사항: "그래 무조건 2개 단위로 할당하고 그걸 DB적으로 관리해보자. 고쳐줘."
+
+해결:
+  1. 배포 시작 전에 타겟 슬롯 정리
+  2. 기존 컨테이너 확인 → 중지 → 제거
+  3. DB에서 컨테이너 ID 제거
+  4. 깔끔한 상태에서 새 컨테이너 시작
+
+파일: agent/src/build/deployer.rs:57-83
+```rust
+// Clean up target slot's old container if it exists
+let old_container_id = match target_slot {
+    Slot::Blue => project.blue_container_id.as_ref(),
+    Slot::Green => project.green_container_id.as_ref(),
+};
+
+if let Some(old_id) = old_container_id {
+    // Check if container actually exists
+    if self.docker.is_container_running(old_id).await {
+        info!("Stopping old {} container: {}", target_slot, old_id);
+        self.docker.stop_container(old_id).await.ok();
+    } else {
+        info!("Old {} container {} not found, skipping cleanup", target_slot, old_id);
+    }
+    // Always try to remove regardless of running state
+    self.docker.remove_container(old_id).await.ok();
+
+    // Clear from database
+    match target_slot {
+        Slot::Blue => {
+            self.state.db.update_project_blue_container(project.id, None).await?;
+        }
+        Slot::Green => {
+            self.state.db.update_project_green_container(project.id, None).await?;
+        }
+    }
+}
+```
+
+블루-그린 관리 3단계 보호:
+  1. 프로젝트 생성: active_slot='Blue', container_ids=NULL
+  2. 시스템 시작: 존재하지 않는 컨테이너 DB 정리
+  3. 배포 전: 타겟 슬롯 기존 컨테이너 정리
+
+교훈:
+  - Idempotent operations (멱등성) 중요
+  - 항상 깨끗한 상태에서 시작
+  - 실패 시나리오 고려한 robust한 설계
+  - DB와 실제 리소스의 일관성 유지
+
 🚀 배포 완료
 --------------------------------------------------------------------------------
-Docker Hub: choho97/lightweight-ci:latest (sha256:319e581d0b94...)
-Git Commit: (최신)
+Docker Hub: choho97/lightweight-ci:latest (sha256:02de4a05b4a3...)
+Git Commit: d2b1b04 (2026-01-08)
 컨테이너: 정상 실행 중
-헬스체크: 성공 (http://172.19.0.1:10001/health)
-프록시: 정상 작동 (http://172.19.0.1:10001/)
+시스템: 컨테이너 상태 동기화 완료
+헬스체크: Docker 컨테이너 상태 확인 방식으로 변경
+블루-그린: 3단계 보호 체계 구축 완료
 
 📋 실행 방법
 --------------------------------------------------------------------------------

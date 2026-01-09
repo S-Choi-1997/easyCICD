@@ -54,7 +54,12 @@
       "Bash(timeout 120 bash -c 'while ! docker ps | grep -q \"\"choho97/lightweight-ci.*Up.*second\"\"; do sleep 2; done; echo \"\"Container is up!\"\"')",
       "Bash(xargs cat:*)",
       "Bash(xargs:*)",
-      "Bash(docker network inspect:*)"
+      "Bash(docker network inspect:*)",
+      "Bash(docker rm:*)",
+      "Bash(docker restart:*)",
+      "Bash(docker-compose build:*)",
+      "Bash(bash:*)",
+      "Bash(timeout 3 docker logs:*)"
     ]
   }
 }

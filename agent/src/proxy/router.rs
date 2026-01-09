@@ -46,26 +46,83 @@ async fn handle_request(
     state: AppState,
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
     let path = req.uri().path();
+    let method = req.method().clone();
     let headers = req.headers().clone();
 
-    // Parse project name from path (/{project_name}/...)
-    let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-    if parts.is_empty() || parts[0].is_empty() {
-        return Ok(Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Full::new(Bytes::from("Not found")))
-            .unwrap());
-    }
+    // Log all incoming requests
+    let host_header = headers.get("host").and_then(|h| h.to_str().ok()).unwrap_or("no-host");
+    info!("Proxy request: {} {} (Host: {})", method, path, host_header);
 
-    let project_name = parts[0];
+    // Parse project name from path (/{project_name}/...) for fallback
+    let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+
+    // Determine project name and routing mode
+    let (project_name, is_subdomain_routing) = if let Some(host) = headers.get("host") {
+        if let Ok(host_str) = host.to_str() {
+            // Extract hostname without port: projectname-app.albl.cloud:9999 -> projectname-app.albl.cloud
+            let hostname = host_str.split(':').next().unwrap_or(host_str);
+
+            // Check if subdomain routing should be used
+            if let Some(ref base_domain) = state.base_domain {
+                // Build the pattern to match: -app.{base_domain}
+                let app_suffix = format!("-app.{}", base_domain);
+
+                if hostname.ends_with(&app_suffix) {
+                    // Extract project name: projectname-app.albl.cloud -> projectname
+                    let project_name = hostname.trim_end_matches(&app_suffix);
+                    info!("Subdomain routing: {} -> project '{}'", hostname, project_name);
+                    (project_name.to_string(), true)
+                } else {
+                    // Fallback to path-based routing
+                    if parts.is_empty() || parts[0].is_empty() {
+                        return Ok(Response::builder()
+                            .status(StatusCode::NOT_FOUND)
+                            .header("Content-Type", "text/plain; charset=utf-8")
+                            .body(Full::new(Bytes::from("Not found")))
+                            .unwrap());
+                    }
+                    (parts[0].to_string(), false)
+                }
+            } else {
+                // No base_domain set, use path-based routing
+                if parts.is_empty() || parts[0].is_empty() {
+                    return Ok(Response::builder()
+                        .status(StatusCode::NOT_FOUND)
+                        .body(Full::new(Bytes::from("Not found")))
+                        .unwrap());
+                }
+                (parts[0].to_string(), false)
+            }
+        } else {
+            // Cannot parse host header, fallback to path-based
+            if parts.is_empty() || parts[0].is_empty() {
+                return Ok(Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header("Content-Type", "text/plain; charset=utf-8")
+                    .body(Full::new(Bytes::from("Not found")))
+                    .unwrap());
+            }
+            (parts[0].to_string(), false)
+        }
+    } else {
+        // No host header, fallback to path-based
+        if parts.is_empty() || parts[0].is_empty() {
+            return Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Full::new(Bytes::from("Not found")))
+                .unwrap());
+        }
+        (parts[0].to_string(), false)
+    };
 
     // Get project from database
-    let project = match state.db.get_project_by_name(project_name).await {
+    let project = match state.db.get_project_by_name(&project_name).await {
         Ok(p) => p,
         Err(e) => {
             warn!("Failed to get project {}: {}", project_name, e);
             return Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
+                .header("Content-Type", "text/plain; charset=utf-8")
                 .body(Full::new(Bytes::from("Project not found")))
                 .unwrap());
         }
@@ -77,11 +134,17 @@ async fn handle_request(
         Slot::Green => project.green_port,
     };
 
-    // Remove project name from path
-    let target_path = if parts.len() > 1 {
-        format!("/{}", parts[1..].join("/"))
+    // Determine target path based on routing mode
+    let target_path = if is_subdomain_routing {
+        // Subdomain routing: keep full path (/api/users -> /api/users)
+        path.to_string()
     } else {
-        "/".to_string()
+        // Path-based routing: remove first segment (/project1/api/users -> /api/users)
+        if parts.len() > 1 {
+            format!("/{}", parts[1..].join("/"))
+        } else {
+            "/".to_string()
+        }
     };
 
     // Preserve query string
@@ -99,6 +162,7 @@ async fn handle_request(
     );
 
     // Forward request to target
+    info!("→ Forwarding to backend: {}", target_uri);
     let client = reqwest::Client::new();
 
     let method = match *req.method() {
@@ -119,6 +183,7 @@ async fn handle_request(
             warn!("Failed to collect request body: {}", e);
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
+                .header("Content-Type", "text/plain; charset=utf-8")
                 .body(Full::new(Bytes::from("Bad request")))
                 .unwrap());
         }
@@ -143,9 +208,10 @@ async fn handle_request(
     {
         Ok(res) => res,
         Err(e) => {
-            warn!("Failed to proxy request: {}", e);
+            warn!("✗ Backend request failed: {}", e);
             return Ok(Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
+                .header("Content-Type", "text/plain; charset=utf-8")
                 .body(Full::new(Bytes::from("Service unavailable")))
                 .unwrap());
         }
@@ -153,19 +219,42 @@ async fn handle_request(
 
     // Convert response
     let status = response.status();
+    let headers = response.headers().clone();
+    info!("← Backend response: {} (headers: {})", status, headers.len());
     let body = match response.bytes().await {
         Ok(b) => b,
         Err(e) => {
             warn!("Failed to read response body: {}", e);
             return Ok(Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
+                .header("Content-Type", "text/plain; charset=utf-8")
                 .body(Full::new(Bytes::from("Error reading response")))
                 .unwrap());
         }
     };
 
-    Ok(Response::builder()
-        .status(status.as_u16())
+    // Build response with headers copied from backend
+    let mut response_builder = Response::builder().status(status.as_u16());
+
+    // Copy all headers from backend response
+    let mut header_count = 0;
+    for (name, value) in headers.iter() {
+        match value.to_str() {
+            Ok(value_str) => {
+                response_builder = response_builder.header(name.as_str(), value_str);
+                if name == "content-type" {
+                    info!("  → Copying Content-Type: {}", value_str);
+                }
+                header_count += 1;
+            }
+            Err(e) => {
+                warn!("Failed to convert header {} to string: {}", name, e);
+            }
+        }
+    }
+    info!("← Sending response to client: {} ({} headers)", status, header_count);
+
+    Ok(response_builder
         .body(Full::new(body))
         .unwrap())
 }

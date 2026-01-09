@@ -125,9 +125,11 @@
   }
 
   function getProjectUrl(projectName) {
-    const host = domain || `${window.location.hostname}:9999`;
+    const baseDomain = domain || 'albl.cloud';
     const protocol = domain && !domain.includes('localhost') ? 'https' : 'http';
-    return `${protocol}://${host}/${projectName}/`;
+
+    // Use subdomain-based routing: projectname-app.albl.cloud
+    return `${protocol}://${projectName}-app.${baseDomain}/`;
   }
 </script>
 

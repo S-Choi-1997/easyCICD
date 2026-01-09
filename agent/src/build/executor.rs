@@ -279,6 +279,9 @@ http {
         root /app;
         index index.html;
 
+        # Force Content-Type headers (Cloudflare compatibility)
+        add_header X-Content-Type-Options "nosniff" always;
+
         location / {
             try_files $uri $uri/ /index.html;
         }
@@ -286,7 +289,8 @@ http {
         # Cache static assets
         location ~* \.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2|ttf|eot)$ {
             expires 1y;
-            add_header Cache-Control "public, immutable";
+            add_header Cache-Control "public, immutable" always;
+            add_header X-Content-Type-Options "nosniff" always;
         }
 
         # Health check endpoint

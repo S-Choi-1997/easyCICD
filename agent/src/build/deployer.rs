@@ -54,6 +54,34 @@ impl Deployer {
             target_slot, target_port
         );
 
+        // Clean up target slot's old container if it exists
+        let old_container_id = match target_slot {
+            Slot::Blue => project.blue_container_id.as_ref(),
+            Slot::Green => project.green_container_id.as_ref(),
+        };
+
+        if let Some(old_id) = old_container_id {
+            // Check if container actually exists
+            if self.docker.is_container_running(old_id).await {
+                info!("Stopping old {} container: {}", target_slot, old_id);
+                self.docker.stop_container(old_id).await.ok();
+            } else {
+                info!("Old {} container {} not found, skipping cleanup", target_slot, old_id);
+            }
+            // Always try to remove regardless of running state
+            self.docker.remove_container(old_id).await.ok();
+
+            // Clear from database
+            match target_slot {
+                Slot::Blue => {
+                    self.state.db.update_project_blue_container(project.id, None).await?;
+                }
+                Slot::Green => {
+                    self.state.db.update_project_green_container(project.id, None).await?;
+                }
+            }
+        }
+
         // Start runtime container
         let container_id = self
             .docker
@@ -62,7 +90,7 @@ impl Deployer {
                 &project.runtime_command,
                 output_path,
                 target_port,
-                &project.name,
+                project.id,
                 &target_slot.to_string().to_lowercase(),
             )
             .await
@@ -88,7 +116,7 @@ impl Deployer {
 
         // Perform health check
         let health_check_result = self
-            .perform_health_check(project, build, target_port)
+            .perform_health_check(project, build, &container_id)
             .await;
 
         match health_check_result {
@@ -221,13 +249,11 @@ impl Deployer {
         }
     }
 
-    async fn perform_health_check(&self, project: &Project, build: &Build, port: u16) -> Result<()> {
+    async fn perform_health_check(&self, project: &Project, build: &Build, container_id: &str) -> Result<()> {
         let max_attempts = 10;
-        let retry_interval = Duration::from_secs(5);
-        let gateway_ip = self.docker.gateway_ip();
-        let health_check_url = format!("http://{}:{}{}", gateway_ip, port, project.health_check_url);
+        let retry_interval = Duration::from_secs(2);
 
-        info!("Starting health check: {}", health_check_url);
+        info!("Starting container health check for container: {}", container_id);
 
         for attempt in 1..=max_attempts {
             self.state.emit_event(Event::HealthCheck {
@@ -236,56 +262,33 @@ impl Deployer {
                 attempt,
                 max_attempts,
                 status: "Checking".to_string(),
-                url: health_check_url.clone(),
+                url: format!("container://{}", container_id),
                 timestamp: Event::now(),
             });
 
-            match reqwest::get(&health_check_url).await {
-                Ok(response) => {
-                    let status_code = response.status();
-                    if status_code.is_success() {
-                        info!("Health check passed on attempt {}/{} - Status: {}", attempt, max_attempts, status_code);
+            // Check if container is running
+            let is_running = self.docker.is_container_running(&container_id).await;
 
-                        self.state.emit_event(Event::HealthCheck {
-                            project_id: project.id,
-                            build_id: build.id,
-                            attempt,
-                            max_attempts,
-                            status: "Success".to_string(),
-                            url: health_check_url,
-                            timestamp: Event::now(),
-                        });
+            if is_running {
+                info!("Container health check passed on attempt {}/{} - Container is running", attempt, max_attempts);
 
-                        return Ok(());
-                    } else {
-                        let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
-                        warn!(
-                            "Health check returned status {} on attempt {}/{} - URL: {} - Body preview: {}",
-                            status_code,
-                            attempt,
-                            max_attempts,
-                            health_check_url,
-                            &body.chars().take(200).collect::<String>()
-                        );
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        "Health check failed on attempt {}/{} - URL: {} - Error: {}",
-                        attempt, max_attempts, health_check_url, e
-                    );
+                self.state.emit_event(Event::HealthCheck {
+                    project_id: project.id,
+                    build_id: build.id,
+                    attempt,
+                    max_attempts,
+                    status: "Success".to_string(),
+                    url: format!("container://{}", container_id),
+                    timestamp: Event::now(),
+                });
 
-                    // Check if container is still running
-                    if let Some(container_id) = match port {
-                        p if p == project.blue_port as u16 => project.blue_container_id.as_ref(),
-                        p if p == project.green_port as u16 => project.green_container_id.as_ref(),
-                        _ => None,
-                    } {
-                        if !self.docker.is_container_running(container_id).await {
-                            warn!("Container {} is not running!", container_id);
-                        }
-                    }
-                }
+                return Ok(());
+            } else {
+                warn!(
+                    "Container health check failed on attempt {}/{} - Container is not running",
+                    attempt,
+                    max_attempts
+                );
             }
 
             if attempt < max_attempts {
@@ -299,7 +302,7 @@ impl Deployer {
             attempt: max_attempts,
             max_attempts,
             status: "Failed".to_string(),
-            url: health_check_url,
+            url: format!("container://{}", container_id),
             timestamp: Event::now(),
         });
 

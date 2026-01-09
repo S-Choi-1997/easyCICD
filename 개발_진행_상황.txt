@@ -164,6 +164,80 @@ Phase 7: 네트워크 통신 개선 (완료) 🆕
    - 프록시 라우팅에서 Gateway IP 사용
    - Cloudflare Tunnel 연동 지원
 
+Phase 8: 모노레포 지원 (완료) 🆕
+----------------------------------
+✅ Working Directory 지원
+   - 004_working_directory.sql 마이그레이션 추가
+   - models.rs에 working_directory 필드 추가 (Project, CreateProject)
+   - path_filter로부터 working_directory 자동 추출 (detector.rs:50-54)
+
+✅ 빌드 컨테이너 WORKDIR 동적 설정
+   - docker/client.rs에서 working_directory 기반 WORKDIR 설정
+   - /app (루트) 또는 /app/subdirectory 자동 선택
+   - build/executor.rs에서 working_directory 전달
+
+✅ 데이터 플로우 완성
+   - Frontend: Setup.svelte에서 working_directory 전송
+   - Backend API: projects.rs에서 수신 및 CreateProject로 전달
+   - Database: queries.rs INSERT 쿼리에 working_directory 저장
+   - Build: executor.rs → docker/client.rs → 빌드 컨테이너 WORKDIR
+
+✅ 빌드 출력 복사 개선
+   - 모든 프로젝트 타입에 /output 복사 명령 추가
+   - Node.js: dist/* 또는 build/* → /output/
+   - Gradle/Maven: *.jar → /output/app.jar
+   - Runtime 명령어: /output/app.jar 사용
+
+Phase 9: 서브도메인 기반 라우팅 (진행 중) 🆕
+----------------------------------
+✅ 프록시 라우터 개선
+   - Host 헤더에서 서브도메인 추출 (proxy/router.rs)
+   - 서브도메인 방식: project1.app.albl.cloud → project1
+   - 경로 기반 폴백: /project1/... (하위 호환성)
+   - base_domain 기반 라우팅 결정
+
+✅ AppState에 base_domain 추가
+   - state.rs에 base_domain: Option<String> 필드 추가
+   - main.rs에서 DB로부터 base_domain 로드
+   - 도메인 기반 라우팅 활성화/비활성화
+
+✅ 프론트엔드 URL 생성 수정
+   - Dashboard.svelte의 getProjectUrl() 함수
+   - 서브도메인 방식 URL 생성: https://project1.app.albl.cloud/
+
+Phase 10: 블루-그린 배포 관리 강화 (완료) 🆕
+----------------------------------
+✅ 시스템 시작 시 컨테이너 상태 동기화
+   - main.rs에 synchronize_container_states() 함수 추가 (line 163-200)
+   - DB에 저장된 컨테이너 ID가 실제로 존재하는지 확인
+   - 존재하지 않는 컨테이너 ID는 DB에서 자동 제거
+   - 시스템 재시작 후 orphaned 컨테이너 참조 방지
+
+✅ 배포 전 타겟 슬롯 정리
+   - deployer.rs에 pre-deployment cleanup 로직 추가 (line 57-83)
+   - 새 컨테이너 시작 전 타겟 슬롯의 기존 컨테이너 확인
+   - 존재하면 중지(stop) 및 제거(remove)
+   - DB에서 컨테이너 ID 제거 후 새 컨테이너 시작
+   - 슬롯 상태를 항상 깔끔하게 유지
+
+✅ 헬스체크 로직 개선
+   - HTTP 기반 → Docker 컨테이너 상태 확인 방식으로 변경
+   - Context path 설정 불필요 (Spring Boot /api/spring 등)
+   - 10회 재시도, 2초 간격
+   - 실제 컨테이너 ID를 직접 전달 (stale data 문제 해결)
+   - deployer.rs perform_health_check() 함수 시그니처 변경 (line 252-310)
+
+✅ 포트 할당 전략
+   - 항상 2개 단위(blue_port, green_port)로 할당
+   - 10002부터 순차적 할당 (queries.rs:123-169)
+   - active_slot 기본값: 'Blue'
+   - 모든 container_id는 NULL로 시작
+
+✅ 블루-그린 관리 3단계 보호
+   1. 프로젝트 생성: active_slot='Blue', container_ids=NULL
+   2. 시스템 시작: 존재하지 않는 컨테이너 DB 정리
+   3. 배포 전: 타겟 슬롯 기존 컨테이너 정리
+
 주요 기술 스택
 ----------------------------------
 백엔드:
@@ -199,6 +273,10 @@ Phase 7: 네트워크 통신 개선 (완료) 🆕
 9. nginx daemon directive 중복 제거 🆕
 10. Docker 네트워크 Gateway IP 사용 🆕
 11. 멀티 네트워크 컨테이너 지원 🆕
+12. 모노레포 working_directory DB 저장 누락 수정 🆕
+13. 헬스체크 stale data 문제 수정 (컨테이너 ID 직접 전달) 🆕
+14. 시스템 시작 시 컨테이너 상태 동기화 🆕
+15. 배포 전 타겟 슬롯 정리 로직 추가 🆕
 
 디렉토리 구조
 ----------------------------------

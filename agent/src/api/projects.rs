@@ -249,11 +249,24 @@ async fn delete_project(
             Slot::Green => &project.green_container_id,
         };
 
+        // Try to stop by container ID first
         if let Some(cid) = container_id {
             info!("Stopping container {} for project {}", cid, project.name);
             if let Err(e) = docker.stop_container(cid).await {
                 warn!("Failed to stop container {}: {}", cid, e);
             }
+        }
+
+        // Also try to stop by container name (in case container_id is not in DB)
+        let container_name = match slot {
+            Slot::Blue => format!("project-{}-blue", project.id),
+            Slot::Green => format!("project-{}-green", project.id),
+        };
+
+        info!("Attempting to stop container by name: {}", container_name);
+        if let Err(e) = docker.stop_container(&container_name).await {
+            // This is expected to fail if container doesn't exist, so just debug log
+            info!("Container {} not found or already stopped", container_name);
         }
     }
 

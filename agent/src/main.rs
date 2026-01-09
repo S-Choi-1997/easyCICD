@@ -63,10 +63,23 @@ async fn main() -> Result<()> {
     let docker = DockerClient::new_with_host_path_detection().await?;
     let gateway_ip = docker.gateway_ip().to_string();
 
+    // Load base domain from database (defaults to albl.cloud)
+    let base_domain = db.get_domain().await
+        .ok()
+        .flatten()
+        .or_else(|| Some("albl.cloud".to_string()));
+
+    info!("Base domain: {:?}", base_domain);
+
     // Create application state
-    let state = AppState::new(db, gateway_ip);
+    let state = AppState::new(db, gateway_ip, base_domain);
 
     info!("Application state initialized");
+
+    // Synchronize container states with database on startup
+    info!("Synchronizing container states...");
+    synchronize_container_states(&state, &docker).await?;
+    info!("Container state synchronization complete");
 
     // Build API server routes
     let app = Router::new()
@@ -143,6 +156,45 @@ async fn main() -> Result<()> {
     }
 
     info!("Shutting down...");
+
+    Ok(())
+}
+
+/// Synchronize container states with database on startup
+/// Removes container IDs from DB if containers don't exist
+async fn synchronize_container_states(state: &AppState, docker: &DockerClient) -> Result<()> {
+    let projects = state.db.list_projects().await?;
+
+    for project in projects {
+        let mut needs_update = false;
+        let mut new_blue_id = project.blue_container_id.clone();
+        let mut new_green_id = project.green_container_id.clone();
+
+        // Check Blue container
+        if let Some(blue_id) = &project.blue_container_id {
+            if !docker.is_container_running(blue_id).await {
+                info!("Project '{}': Blue container {} not found, clearing from DB", project.name, blue_id);
+                new_blue_id = None;
+                needs_update = true;
+            }
+        }
+
+        // Check Green container
+        if let Some(green_id) = &project.green_container_id {
+            if !docker.is_container_running(green_id).await {
+                info!("Project '{}': Green container {} not found, clearing from DB", project.name, green_id);
+                new_green_id = None;
+                needs_update = true;
+            }
+        }
+
+        // Update database if needed
+        if needs_update {
+            state.db.update_project_blue_container(project.id, new_blue_id).await?;
+            state.db.update_project_green_container(project.id, new_green_id).await?;
+            info!("Project '{}': Container states synchronized", project.name);
+        }
+    }
 
     Ok(())
 }

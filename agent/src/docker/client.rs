@@ -325,12 +325,12 @@ impl DockerClient {
         command: &str,
         output_path: PathBuf,
         port: u16,
-        project_name: &str,
+        project_id: i64,
         slot: &str,
     ) -> Result<String> {
         self.ensure_image(image).await?;
 
-        let container_name = format!("{}-{}", project_name, slot);
+        let container_name = format!("project-{}-{}", project_id, slot);
 
         // Stop and remove existing container with same name
         let _ = self.stop_container(&container_name).await;
@@ -399,10 +399,16 @@ impl DockerClient {
             .context("Failed to connect container to network")?;
 
         info!("Starting runtime container: {}", container_id);
-        self.docker
+        if let Err(e) = self.docker
             .start_container(&container_id, None::<StartContainerOptions<&str>>)
             .await
-            .context("Failed to start runtime container")?;
+        {
+            return Err(anyhow::anyhow!(
+                "Failed to start runtime container '{}' on port {}: {}. \
+                Check if port is already in use or if there are configuration issues.",
+                container_name, port, e
+            ));
+        }
 
         Ok(container_id)
     }
