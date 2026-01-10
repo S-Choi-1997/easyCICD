@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use bollard::container::{
-    Config, CreateContainerOptions, InspectContainerOptions, LogOutput, RemoveContainerOptions, StartContainerOptions,
-    StopContainerOptions,
+    Config, CreateContainerOptions, InspectContainerOptions, LogOutput, RemoveContainerOptions,
+    RestartContainerOptions, StartContainerOptions, StopContainerOptions,
 };
 use bollard::image::CreateImageOptions;
 use bollard::Docker;
@@ -422,6 +422,21 @@ impl DockerClient {
         &self.gateway_ip
     }
 
+    /// Get access to underlying Docker API for advanced operations
+    pub fn docker_api(&self) -> &Docker {
+        &self.docker
+    }
+
+    /// Start container
+    pub async fn start_container(&self, container_id: &str) -> Result<()> {
+        info!("Starting container: {}", container_id);
+        self.docker
+            .start_container(container_id, None::<StartContainerOptions<String>>)
+            .await
+            .context("Failed to start container")?;
+        Ok(())
+    }
+
     /// Stop container
     pub async fn stop_container(&self, container_id: &str) -> Result<()> {
         info!("Stopping container: {}", container_id);
@@ -434,6 +449,21 @@ impl DockerClient {
             )
             .await
             .ok();
+        Ok(())
+    }
+
+    /// Restart container
+    pub async fn restart_container(&self, container_id: &str) -> Result<()> {
+        info!("Restarting container: {}", container_id);
+        self.docker
+            .restart_container(
+                container_id,
+                Some(RestartContainerOptions {
+                    t: 10, // 10 seconds timeout
+                }),
+            )
+            .await
+            .context("Failed to restart container")?;
         Ok(())
     }
 

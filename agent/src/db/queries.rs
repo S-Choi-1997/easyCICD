@@ -60,6 +60,13 @@ impl Database {
             mark_applied(2).await?;
         }
 
+        // Migration 3: Deploy log path
+        if !is_applied(3).await? {
+            let migration3 = include_str!("../../migrations/003_deploy_logs.sql");
+            sqlx::raw_sql(migration3).execute(&self.pool).await?;
+            mark_applied(3).await?;
+        }
+
         Ok(())
     }
 
@@ -81,6 +88,13 @@ impl Database {
         .bind(pat)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    pub async fn delete_github_pat(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM settings WHERE key = 'github_pat'")
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -226,13 +240,14 @@ impl Database {
 
         // Use project ID for log path (not name, to avoid conflicts and special characters)
         let log_path = format!("/data/easycicd/logs/{}/{}.log", build.project_id, build_number);
+        let deploy_log_path = format!("/data/easycicd/logs/{}/{}_deploy.log", build.project_id, build_number);
 
         let result = sqlx::query(
             r#"
             INSERT INTO builds (
                 project_id, build_number, commit_hash, commit_message, author,
-                status, log_path
-            ) VALUES (?, ?, ?, ?, ?, 'Queued', ?)
+                status, log_path, deploy_log_path
+            ) VALUES (?, ?, ?, ?, ?, 'Queued', ?, ?)
             "#
         )
         .bind(build.project_id)
@@ -241,6 +256,7 @@ impl Database {
         .bind(&build.commit_message)
         .bind(&build.author)
         .bind(&log_path)
+        .bind(&deploy_log_path)
         .execute(&self.pool)
         .await?;
 

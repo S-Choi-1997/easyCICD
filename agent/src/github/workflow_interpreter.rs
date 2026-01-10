@@ -190,10 +190,27 @@ impl WorkflowInterpreter {
     // =========================================================================
 
     fn analyze_tasks(info: &WorkflowInfo, runtime: &Runtime) -> Vec<Task> {
-        info.run_commands
+        println!("🔍 [INTERPRETER] Analyzing tasks...");
+        println!("🔍 [INTERPRETER] Total run commands: {}", info.run_commands.len());
+
+        let tasks: Vec<Task> = info.run_commands
             .iter()
-            .filter_map(|cmd| Self::parse_command(cmd, runtime))
-            .collect()
+            .enumerate()
+            .filter_map(|(i, cmd)| {
+                println!("  📝 Run command #{}: {:?}", i + 1, cmd.step_name);
+                println!("     Command: \"{}\"", cmd.command);
+                let result = Self::parse_command(cmd, runtime);
+                if result.is_some() {
+                    println!("     ✓ Included as task");
+                } else {
+                    println!("     ✗ Filtered out (meaningless command)");
+                }
+                result
+            })
+            .collect();
+
+        println!("✅ [INTERPRETER] Total tasks after filtering: {}", tasks.len());
+        tasks
     }
 
     fn parse_command(cmd: &RunCommand, runtime: &Runtime) -> Option<Task> {
@@ -260,10 +277,24 @@ impl WorkflowInterpreter {
     }
 
     fn is_meaningful_command(command: &str) -> bool {
-        // 의미 없는 커맨드 필터링 (echo, sleep 등)
-        !command.starts_with("echo ")
-            && !command.starts_with("sleep ")
-            && !command.contains("curl -f http://localhost") // Health check
+        // 멀티라인 커맨드 처리: 각 라인별로 확인
+        let lines: Vec<&str> = command.lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .collect();
+
+        // 모든 라인이 의미 없는 커맨드인 경우만 필터링
+        let has_meaningful_line = lines.iter().any(|line| {
+            // echo, sleep, curl health check는 의미 없음
+            !line.starts_with("echo ")
+                && !line.starts_with("sleep ")
+                && !line.contains("curl -f http://localhost")
+                // 단, ls, du 같은 유용한 커맨드는 의미 있음
+                && !line.starts_with("#") // 주석 제외
+        });
+
+        // 하나라도 의미있는 라인이 있으면 포함
+        has_meaningful_line
     }
 
     // =========================================================================
@@ -281,25 +312,64 @@ impl WorkflowInterpreter {
     }
 
     fn infer_nodejs_type(tasks: &[Task]) -> ProjectType {
+        println!("🔍 [INTERPRETER] Inferring Node.js project type...");
+        println!("🔍 [INTERPRETER] Total tasks: {}", tasks.len());
+
+        // 모든 태스크 출력
+        for (i, task) in tasks.iter().enumerate() {
+            println!("  📋 Task {}: {:?} - \"{}\"", i + 1, task.task_type, task.command);
+        }
+
         // "node src/index.js" 같은 서버 실행 커맨드가 있으면 Backend
         let has_node_execution = tasks.iter().any(|t|
             t.command.contains("node ") && t.command.contains(".js")
         );
+        println!("  ✓ has_node_execution: {}", has_node_execution);
 
         // "npm run build" 같은 빌드가 있고, dist/build 폴더를 만드는 경우 Frontend
-        let has_frontend_build = tasks.iter().any(|t|
-            t.task_type == TaskType::Build &&
-            (t.command.contains("vite") || t.command.contains("webpack") || t.command.contains("react-scripts"))
-        );
+        let has_frontend_build = tasks.iter().any(|t| {
+            let is_build = t.task_type == TaskType::Build;
+            let has_frontend_keyword = t.command.contains("vite")
+                || t.command.contains("webpack")
+                || t.command.contains("react-scripts");
 
-        if has_node_execution && !has_frontend_build {
+            println!("    - Command: \"{}\" -> is_build: {}, has_frontend_keyword: {}",
+                t.command, is_build, has_frontend_keyword);
+
+            is_build && has_frontend_keyword
+        });
+        println!("  ✓ has_frontend_build: {}", has_frontend_build);
+
+        // Build 태스크가 있는지 체크
+        let has_build_task = tasks.iter().any(|t| t.task_type == TaskType::Build);
+        println!("  ✓ has_build_task: {}", has_build_task);
+
+        // dist/ 또는 build/ 폴더 관련 커맨드 체크
+        let has_dist_output = tasks.iter().any(|t|
+            t.command.contains("dist/") || t.command.contains("build/")
+        );
+        println!("  ✓ has_dist_output: {}", has_dist_output);
+
+        // artifact 업로드 체크 (워크플로우 파싱 단계에서는 안 보이지만 참고용)
+        let project_type = if has_node_execution && !has_frontend_build {
+            println!("  → Decision: NodeJsBackend (has node execution, no frontend build keyword)");
             ProjectType::NodeJsBackend
         } else if has_frontend_build {
+            println!("  → Decision: NodeJsFrontend (has frontend build keyword)");
+            ProjectType::NodeJsFrontend
+        } else if has_build_task && has_dist_output {
+            println!("  → Decision: NodeJsFrontend (has build task + dist output)");
+            ProjectType::NodeJsFrontend
+        } else if has_build_task {
+            println!("  → Decision: NodeJsFrontend (has build task, assuming frontend)");
             ProjectType::NodeJsFrontend
         } else {
-            // 애매한 경우 - 기본값은 Backend (Express 서버 가정)
+            println!("  → Decision: NodeJsBackend (default fallback)");
             ProjectType::NodeJsBackend
-        }
+        };
+
+        println!("✅ [INTERPRETER] Final project type: {:?}", project_type);
+        project_type
     }
 
     // =========================================================================

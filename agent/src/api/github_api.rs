@@ -85,6 +85,26 @@ pub async fn get_github_pat_status(State(state): State<AppState>) -> impl IntoRe
     }
 }
 
+/// Delete GitHub PAT (sign out)
+pub async fn delete_github_pat(State(state): State<AppState>) -> impl IntoResponse {
+    if let Err(e) = state.db.delete_github_pat().await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to delete PAT: {}", e)
+            })),
+        );
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "message": "GitHub PAT deleted successfully"
+        })),
+    )
+}
+
 /// List user's GitHub repositories
 pub async fn list_repositories(State(state): State<AppState>) -> impl IntoResponse {
     let pat = match state.db.get_github_pat().await {

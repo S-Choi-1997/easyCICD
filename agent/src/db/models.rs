@@ -151,6 +151,7 @@ pub struct Build {
     pub status: BuildStatus,
 
     pub log_path: String,
+    pub deploy_log_path: Option<String>,
     pub output_path: Option<String>,
 
     pub deployed_slot: Option<String>,

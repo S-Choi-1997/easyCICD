@@ -19,6 +19,9 @@ pub fn projects_routes() -> Router<AppState> {
         .route("/", get(list_projects).post(create_project))
         .route("/{id}", get(get_project).delete(delete_project))
         .route("/{id}/builds", post(trigger_build))
+        .route("/{id}/containers/start", post(start_containers))
+        .route("/{id}/containers/stop", post(stop_containers))
+        .route("/{id}/containers/restart", post(restart_containers))
 }
 
 async fn list_projects(State(state): State<AppState>) -> impl IntoResponse {
@@ -317,4 +320,202 @@ async fn delete_project(
         StatusCode::OK,
         Json(serde_json::json!({"message": "Project deleted successfully"})),
     )
+}
+
+async fn start_containers(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    // Get project
+    let project = match state.db.get_project(id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Project not found"})),
+            )
+        }
+        Err(e) => {
+            warn!("Failed to get project: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            );
+        }
+    };
+
+    // Create Docker client
+    let docker = match DockerClient::new() {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("Failed to create Docker client: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Docker error"})),
+            );
+        }
+    };
+
+    let mut results = Vec::new();
+
+    // Start both containers
+    for slot in [Slot::Blue, Slot::Green] {
+        let container_name = match slot {
+            Slot::Blue => format!("project-{}-blue", project.id),
+            Slot::Green => format!("project-{}-green", project.id),
+        };
+
+        match docker.start_container(&container_name).await {
+            Ok(_) => {
+                info!("Started container: {}", container_name);
+                results.push(serde_json::json!({
+                    "slot": format!("{:?}", slot).to_lowercase(),
+                    "status": "started",
+                    "container": container_name
+                }));
+            }
+            Err(e) => {
+                warn!("Failed to start container {}: {}", container_name, e);
+                results.push(serde_json::json!({
+                    "slot": format!("{:?}", slot).to_lowercase(),
+                    "status": "error",
+                    "error": e.to_string()
+                }));
+            }
+        }
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({ "results": results })))
+}
+
+async fn stop_containers(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    // Get project
+    let project = match state.db.get_project(id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Project not found"})),
+            )
+        }
+        Err(e) => {
+            warn!("Failed to get project: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            );
+        }
+    };
+
+    // Create Docker client
+    let docker = match DockerClient::new() {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("Failed to create Docker client: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Docker error"})),
+            );
+        }
+    };
+
+    let mut results = Vec::new();
+
+    // Stop both containers
+    for slot in [Slot::Blue, Slot::Green] {
+        let container_name = match slot {
+            Slot::Blue => format!("project-{}-blue", project.id),
+            Slot::Green => format!("project-{}-green", project.id),
+        };
+
+        match docker.stop_container(&container_name).await {
+            Ok(_) => {
+                info!("Stopped container: {}", container_name);
+                results.push(serde_json::json!({
+                    "slot": format!("{:?}", slot).to_lowercase(),
+                    "status": "stopped",
+                    "container": container_name
+                }));
+            }
+            Err(e) => {
+                warn!("Failed to stop container {}: {}", container_name, e);
+                results.push(serde_json::json!({
+                    "slot": format!("{:?}", slot).to_lowercase(),
+                    "status": "error",
+                    "error": e.to_string()
+                }));
+            }
+        }
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({ "results": results })))
+}
+
+async fn restart_containers(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    // Get project
+    let project = match state.db.get_project(id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Project not found"})),
+            )
+        }
+        Err(e) => {
+            warn!("Failed to get project: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            );
+        }
+    };
+
+    // Create Docker client
+    let docker = match DockerClient::new() {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("Failed to create Docker client: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Docker error"})),
+            );
+        }
+    };
+
+    let mut results = Vec::new();
+
+    // Restart both containers
+    for slot in [Slot::Blue, Slot::Green] {
+        let container_name = match slot {
+            Slot::Blue => format!("project-{}-blue", project.id),
+            Slot::Green => format!("project-{}-green", project.id),
+        };
+
+        match docker.restart_container(&container_name).await {
+            Ok(_) => {
+                info!("Restarted container: {}", container_name);
+                results.push(serde_json::json!({
+                    "slot": format!("{:?}", slot).to_lowercase(),
+                    "status": "restarted",
+                    "container": container_name
+                }));
+            }
+            Err(e) => {
+                warn!("Failed to restart container {}: {}", container_name, e);
+                results.push(serde_json::json!({
+                    "slot": format!("{:?}", slot).to_lowercase(),
+                    "status": "error",
+                    "error": e.to_string()
+                }));
+            }
+        }
+    }
+
+    (StatusCode::OK, Json(serde_json::json!({ "results": results })))
 }

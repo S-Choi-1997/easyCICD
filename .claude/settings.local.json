@@ -59,7 +59,12 @@
       "Bash(docker restart:*)",
       "Bash(docker-compose build:*)",
       "Bash(bash:*)",
-      "Bash(timeout 3 docker logs:*)"
+      "Bash(timeout 3 docker logs:*)",
+      "Bash(find:*)",
+      "Bash(netstat -tlnp:*)",
+      "Bash(ss:*)",
+      "Bash(tree:*)",
+      "Bash(wc:*)"
     ]
   }
 }

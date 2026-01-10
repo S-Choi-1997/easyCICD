@@ -161,11 +161,13 @@ async fn main() -> Result<()> {
 }
 
 /// Synchronize container states with database on startup
-/// Removes container IDs from DB if containers don't exist
+/// 1. Removes container IDs from DB if containers don't exist
+/// 2. Removes orphan containers (containers without matching projects in DB)
 async fn synchronize_container_states(state: &AppState, docker: &DockerClient) -> Result<()> {
     let projects = state.db.list_projects().await?;
 
-    for project in projects {
+    // Step 1: Check DB projects and clean up dead containers from DB
+    for project in &projects {
         let mut needs_update = false;
         let mut new_blue_id = project.blue_container_id.clone();
         let mut new_green_id = project.green_container_id.clone();
@@ -193,6 +195,56 @@ async fn synchronize_container_states(state: &AppState, docker: &DockerClient) -
             state.db.update_project_blue_container(project.id, new_blue_id).await?;
             state.db.update_project_green_container(project.id, new_green_id).await?;
             info!("Project '{}': Container states synchronized", project.name);
+        }
+    }
+
+    // Step 2: Clean up orphan containers (containers without projects in DB)
+    use bollard::container::ListContainersOptions;
+    use std::collections::HashMap;
+
+    let mut filters = HashMap::new();
+    filters.insert("name".to_string(), vec!["project-".to_string()]);
+
+    let containers = docker.docker_api()
+        .list_containers(Some(ListContainersOptions {
+            all: true,
+            filters,
+            ..Default::default()
+        }))
+        .await?;
+
+    // Build set of valid project IDs
+    let valid_project_ids: std::collections::HashSet<i64> = projects.iter()
+        .map(|p| p.id)
+        .collect();
+
+    for container in containers {
+        if let Some(names) = container.names {
+            for name in names {
+                // Container name format: /project-{id}-{slot}
+                // Strict matching: must be exactly "project-{number}-{blue|green}"
+                let name = name.trim_start_matches('/');
+
+                // Parse container name with strict format check
+                let parts: Vec<&str> = name.split('-').collect();
+                if parts.len() == 3 && parts[0] == "project" {
+                    // Check if second part is a number (project ID)
+                    if let Ok(project_id) = parts[1].parse::<i64>() {
+                        // Check if third part is valid slot name
+                        if parts[2] == "blue" || parts[2] == "green" {
+                            // Valid project container format - check if orphan
+                            if !valid_project_ids.contains(&project_id) {
+                                // Orphan container found - remove it
+                                if let Some(container_id) = &container.id {
+                                    info!("🧹 Cleaning up orphan container: {} (project ID {} not in DB)", name, project_id);
+                                    docker.stop_container(container_id).await.ok();
+                                    docker.remove_container(container_id).await.ok();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

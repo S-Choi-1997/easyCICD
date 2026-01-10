@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::time::Duration;
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
@@ -24,6 +26,37 @@ impl Deployer {
             "Deploying build #{} for project {}",
             build.build_number, project.name
         );
+
+        // Open deploy log file
+        let deploy_log_path = build.deploy_log_path.as_ref()
+            .context("Deploy log path not set")?;
+        let deploy_log_path_buf = PathBuf::from(deploy_log_path);
+
+        // Create log directory if needed
+        if let Some(parent) = deploy_log_path_buf.parent() {
+            fs::create_dir_all(parent).await
+                .context("Failed to create deploy log directory")?;
+        }
+
+        let mut log_file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&deploy_log_path_buf)
+            .await
+            .context("Failed to open deploy log file")?;
+
+        // Helper macro to write log
+        macro_rules! write_log {
+            ($msg:expr) => {
+                {
+                    let message = format!("[DEPLOY] {}\n", $msg);
+                    log_file.write_all(message.as_bytes()).await.ok();
+                    log_file.flush().await.ok();
+                }
+            };
+        }
+
+        write_log!(format!("Starting deployment for build #{}", build.build_number));
 
         // Update status to Deploying
         self.state
@@ -53,6 +86,7 @@ impl Deployer {
             "Deploying to {} slot on port {}",
             target_slot, target_port
         );
+        write_log!(format!("Deploying to {} slot on port {}", target_slot, target_port));
 
         // Clean up target slot's old container if it exists
         let old_container_id = match target_slot {
@@ -64,9 +98,11 @@ impl Deployer {
             // Check if container actually exists
             if self.docker.is_container_running(old_id).await {
                 info!("Stopping old {} container: {}", target_slot, old_id);
+                write_log!(format!("Stopping old {} container: {}", target_slot, old_id));
                 self.docker.stop_container(old_id).await.ok();
             } else {
                 info!("Old {} container {} not found, skipping cleanup", target_slot, old_id);
+                write_log!(format!("Old {} container {} not found, skipping cleanup", target_slot, old_id));
             }
             // Always try to remove regardless of running state
             self.docker.remove_container(old_id).await.ok();
@@ -83,6 +119,7 @@ impl Deployer {
         }
 
         // Start runtime container
+        write_log!(format!("Starting runtime container with image: {}", project.runtime_image));
         let container_id = self
             .docker
             .run_runtime_container(
@@ -98,6 +135,7 @@ impl Deployer {
             .context("Failed to start runtime container")?;
 
         info!("Runtime container started: {}", container_id);
+        write_log!(format!("Runtime container started: {}", container_id));
 
         // Update container ID in database
         match target_slot {
@@ -123,6 +161,7 @@ impl Deployer {
         match health_check_result {
             Ok(_) => {
                 info!("Health check passed, switching to {} slot", target_slot);
+                write_log!(format!("Health check passed, switching to {} slot", target_slot));
 
                 let deployed_slot_str = target_slot.to_string();
 
@@ -169,6 +208,7 @@ impl Deployer {
 
                 if let Some(old_id) = old_container_id {
                     info!("Stopping old {} container: {}", old_slot, old_id);
+                    write_log!(format!("Stopping old {} container: {}", old_slot, old_id));
                     self.docker.stop_container(&old_id).await.ok();
                     self.docker.remove_container(&old_id).await.ok();
 
@@ -189,10 +229,12 @@ impl Deployer {
                     }
                 }
 
+                write_log!("Deployment completed successfully");
                 Ok(())
             }
             Err(e) => {
                 warn!("Health check failed: {}", e);
+                write_log!(format!("Health check failed: {}", e));
 
                 // TODO: TEMPORARILY DISABLED FOR DEBUGGING
                 // // Rollback: stop and remove new container
@@ -245,6 +287,7 @@ impl Deployer {
                     timestamp: Event::now(),
                 });
 
+                write_log!(format!("Deployment failed: {}", e));
                 anyhow::bail!("Deployment failed: {}", e);
             }
         }

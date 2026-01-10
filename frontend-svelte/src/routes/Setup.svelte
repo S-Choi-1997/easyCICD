@@ -28,13 +28,18 @@
     // TOML configuration for advanced settings
     let configToml = '';
     let tomlError = '';
+    let workingDirectory = '';
+    let runtimePort = '';
+    let runtimePortPlaceholder = '8080';
     const tomlPlaceholder = `# 빌드 설정
 build_image = "node:20"
 build_command = "npm install && npm run build"
+working_directory = ""
 
 # 실행 설정
 runtime_image = "nginx:alpine"
 runtime_command = "nginx -g 'daemon off;'"
+runtime_port = "8080"
 health_check_url = "/"`;
 
     onMount(async () => {
@@ -76,6 +81,30 @@ health_check_url = "/"`;
             }
         } catch (error) {
             console.error(error);
+        }
+    }
+
+    async function deletePAT() {
+        if (!confirm('GitHub PAT를 삭제하시겠습니까? 레포지토리 목록을 다시 불러올 수 없게 됩니다.')) {
+            return;
+        }
+
+        try {
+            const response = await fetch(`${API_BASE}/settings/github-pat`, {
+                method: 'DELETE',
+            });
+
+            if (response.ok) {
+                patConfigured = false;
+                githubUsername = '';
+                repositories = [];
+                branches = [];
+                selectedRepo = '';
+                selectedBranch = '';
+                detectedConfig = null;
+            }
+        } catch (error) {
+            console.error('PAT 삭제 실패:', error);
         }
     }
 
@@ -146,6 +175,10 @@ health_check_url = "/"`;
                 detectedConfig = data;
                 configToml = configToToml(data);
                 detectionStatus = 'success';
+                // Update runtime port placeholder with detected value
+                if (data.runtime_port) {
+                    runtimePortPlaceholder = String(data.runtime_port);
+                }
             } else {
                 detectedConfig = null;
                 detectionStatus = 'failed';
@@ -164,12 +197,13 @@ health_check_url = "/"`;
         return `# 빌드 설정
 build_image = "${config.build_image || ''}"
 build_command = "${config.build_command || ''}"
+working_directory = "${config.working_directory || ''}"
 
 # 실행 설정
 runtime_image = "${config.runtime_image || ''}"
 runtime_command = "${config.runtime_command || ''}"
-health_check_url = "${config.health_check_url || ''}"
-runtime_port = "${config.runtime_port || 8080}"`;
+runtime_port = "${config.runtime_port || 8080}"
+health_check_url = "${config.health_check_url || ''}"`;
     }
 
     // Parse TOML string to config object (simple parser)
@@ -229,11 +263,11 @@ runtime_port = "${config.runtime_port || 8080}"`;
             build_image: config.build_image,
             build_command: config.build_command,
             cache_type: config.cache_type || 'none',
-            working_directory: config.working_directory || null,
+            working_directory: workingDirectory || config.working_directory || null,
             runtime_image: config.runtime_image,
             runtime_command: config.runtime_command || '',
             health_check_url: config.health_check_url || '/',
-            runtime_port: config.runtime_port || 8080,
+            runtime_port: runtimePort ? parseInt(runtimePort) : (config.runtime_port || parseInt(runtimePortPlaceholder) || 8080),
         };
 
         try {
@@ -244,6 +278,18 @@ runtime_port = "${config.runtime_port || 8080}"`;
             });
 
             if (response.ok) {
+                const newProject = await response.json();
+
+                // 프로젝트 등록 성공 시 자동으로 첫 빌드 트리거
+                try {
+                    await fetch(`${API_BASE}/projects/${newProject.id}/builds`, {
+                        method: 'POST'
+                    });
+                } catch (buildError) {
+                    console.error('자동 빌드 시작 실패:', buildError);
+                }
+
+                // 대시보드로 이동
                 push('/');
             }
         } catch (error) {
@@ -253,16 +299,25 @@ runtime_port = "${config.runtime_port || 8080}"`;
 </script>
 
 <div class="container">
-    <h1>프로젝트 등록</h1>
+    <div class="page-header">
+        <h1>프로젝트 등록</h1>
+        <a href="/" class="btn-secondary">← 대시보드로 돌아가기</a>
+    </div>
 
     <!-- GitHub PAT Section -->
     <section class="pat-section">
-        <h2>GitHub 연동</h2>
-        {#if patConfigured}
-            <div class="status-badge connected">
-                ✓ 연결됨 ({githubUsername})
-            </div>
-        {:else}
+        <div class="section-header">
+            <h2>GitHub 연동</h2>
+            {#if patConfigured}
+                <div class="pat-connected-section">
+                    <div class="status-badge connected">
+                        ✓ 연결됨 ({githubUsername})
+                    </div>
+                    <button on:click={deletePAT} class="btn-delete-pat">PAT 삭제</button>
+                </div>
+            {/if}
+        </div>
+        {#if !patConfigured}
             <div class="status-badge disconnected">
                 × 연결 안됨
             </div>
@@ -313,42 +368,69 @@ runtime_port = "${config.runtime_port || 8080}"`;
             </div>
 
             <!-- Branch Selection -->
-            {#if branches.length > 0}
-                <div class="form-group">
-                    <label>브랜치</label>
-                    <select bind:value={selectedBranch} on:change={onBranchChange} class="select-medium">
-                        <option value="">브랜치 선택...</option>
-                        {#each branches as branch}
-                            <option value={branch.name}>
-                                {branch.name} {branch.protected ? '🛡️' : ''}
-                            </option>
-                        {/each}
-                    </select>
-                </div>
-            {/if}
+            <div class="form-group">
+                <label>브랜치</label>
+                <select bind:value={selectedBranch} on:change={onBranchChange} class="select-medium" disabled={branches.length === 0}>
+                    <option value="">브랜치 선택...</option>
+                    {#each branches as branch}
+                        <option value={branch.name}>
+                            {branch.name} {branch.protected ? '🛡️' : ''}
+                        </option>
+                    {/each}
+                </select>
+                {#if branches.length === 0 && selectedRepo}
+                    <p class="help-text">레포지토리를 선택하면 브랜치 목록이 로드됩니다</p>
+                {/if}
+            </div>
 
             <!-- Path Filter (Optional) -->
             <div class="form-group">
-                <label>경로 필터 (선택사항)</label>
+                <label>빌드 트리거 경로 필터 (선택사항)</label>
                 <input
                     type="text"
                     bind:value={pathFilter}
-                    placeholder="backend/ 또는 frontend/ (모노레포용)"
+                    placeholder="예: backend/** 또는 src/**/*.js"
                     class="input-medium"
                 />
-                <p class="help-text">비워두면 전체 레포지토리 대상</p>
+                <p class="help-text">특정 경로의 파일 변경 시에만 빌드 실행. 비워두면 모든 변경사항에 반응</p>
             </div>
 
             <!-- Workflow Path (Optional) -->
             <div class="form-group">
-                <label>워크플로우 경로 (선택사항)</label>
+                <label>워크플로우 파일 경로 (선택사항)</label>
                 <input
                     type="text"
                     bind:value={workflowPath}
                     placeholder=".github/workflows/"
                     class="input-medium"
                 />
-                <p class="help-text">GitHub Actions 워크플로우가 다른 위치에 있는 경우 수정</p>
+                <p class="help-text">GitHub Actions 워크플로우 파일이 저장된 디렉토리</p>
+            </div>
+
+            <!-- Working Directory (Optional) -->
+            <div class="form-group">
+                <label>빌드 실행 디렉토리 (선택사항, 모노레포용)</label>
+                <input
+                    type="text"
+                    bind:value={workingDirectory}
+                    placeholder="예: packages/backend (비워두면 레포지토리 루트)"
+                    class="input-medium"
+                />
+                <p class="help-text">빌드 명령어를 실행할 하위 디렉토리</p>
+            </div>
+
+            <!-- Runtime Port -->
+            <div class="form-group">
+                <label>애플리케이션 포트 (선택사항)</label>
+                <input
+                    type="number"
+                    bind:value={runtimePort}
+                    placeholder={runtimePortPlaceholder}
+                    class="input-short"
+                    min="1"
+                    max="65535"
+                />
+                <p class="help-text">컨테이너 내부에서 앱이 사용하는 포트 번호. 비워두면 {runtimePortPlaceholder}번 포트 사용</p>
             </div>
 
             <!-- Auto-detect Button with Status -->
@@ -447,6 +529,13 @@ runtime_port = "${config.runtime_port || 8080}"`;
         color: var(--gray-900);
     }
 
+    .page-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 2rem;
+    }
+
     h2 {
         font-size: 1.5rem;
         margin-bottom: 1rem;
@@ -467,12 +556,29 @@ runtime_port = "${config.runtime_port || 8080}"`;
         margin-bottom: 2rem;
     }
 
+    .pat-section {
+        padding: 1rem 1.5rem;
+    }
+
+    .section-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+    }
+
+    .section-header h2 {
+        font-size: 1.125rem;
+        margin-bottom: 0;
+    }
+
     .status-badge {
         display: inline-block;
-        padding: 0.5rem 1rem;
+        padding: 0.375rem 0.75rem;
         border-radius: 0.375rem;
         font-weight: 500;
-        margin-bottom: 1rem;
+        font-size: 0.875rem;
+        margin-bottom: 0.5rem;
     }
 
     .status-badge.connected {
@@ -483,6 +589,23 @@ runtime_port = "${config.runtime_port || 8080}"`;
     .status-badge.disconnected {
         background: #fee2e2;
         color: #991b1b;
+    }
+
+    .pat-connected-section {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+
+    .btn-delete-pat {
+        background: #ef4444;
+        color: white;
+        padding: 0.375rem 0.75rem;
+        font-size: 0.875rem;
+    }
+
+    .btn-delete-pat:hover {
+        background: #dc2626;
     }
 
     .form-group {
@@ -503,6 +626,12 @@ runtime_port = "${config.runtime_port || 8080}"`;
         font-size: 1rem;
     }
 
+    select:disabled {
+        background-color: var(--gray-100);
+        color: var(--gray-500);
+        cursor: not-allowed;
+    }
+
     .input-full, .select-full {
         width: 100%;
     }
@@ -518,13 +647,17 @@ runtime_port = "${config.runtime_port || 8080}"`;
     .input-group {
         display: flex;
         gap: 0.5rem;
-        margin-bottom: 1rem;
+        margin-bottom: 0.5rem;
     }
 
     .help-text {
         font-size: 0.875rem;
         color: var(--gray-600);
         margin-top: 0.25rem;
+    }
+
+    .pat-section .help-text {
+        margin-bottom: 0;
     }
 
     .help-text a {

@@ -10,7 +10,7 @@ pub use projects::projects_routes;
 pub use builds::builds_routes;
 pub use ws::ws_handler;
 
-use axum::{routing::{get, post}, Router};
+use axum::{routing::{get, post, delete}, Router};
 use crate::state::AppState;
 
 pub fn api_routes() -> Router<AppState> {
@@ -21,6 +21,7 @@ pub fn api_routes() -> Router<AppState> {
         .route("/settings/domain", post(settings::set_domain))
         .route("/settings/domain", get(settings::get_domain))
         .route("/settings/github-pat", post(github_api::set_github_pat))
+        .route("/settings/github-pat", delete(github_api::delete_github_pat))
         .route("/settings/github-pat-status", get(github_api::get_github_pat_status))
         .route("/github/repositories", get(github_api::list_repositories))
         .route("/github/branches", get(github_api::list_branches))

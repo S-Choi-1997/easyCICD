@@ -15,6 +15,8 @@ pub fn builds_routes() -> Router<AppState> {
         .route("/", get(list_builds))
         .route("/{id}", get(get_build))
         .route("/{id}/logs", get(get_build_logs))
+        .route("/{id}/build-logs", get(get_build_logs_only))
+        .route("/{id}/deploy-logs", get(get_deploy_logs))
 }
 
 #[derive(Deserialize)]
@@ -64,7 +66,7 @@ async fn get_build_logs(
 ) -> impl IntoResponse {
     match state.db.get_build(id).await {
         Ok(Some(build)) => {
-            // Read log file
+            // Read log file (backward compatibility: only build logs)
             match tokio::fs::read_to_string(&build.log_path).await {
                 Ok(content) => (StatusCode::OK, content),
                 Err(_) => (StatusCode::NOT_FOUND, String::from("Log file not found")),
@@ -73,6 +75,50 @@ async fn get_build_logs(
         Ok(None) => (StatusCode::NOT_FOUND, String::from("Build not found")),
         Err(e) => {
             warn!("Failed to get build logs: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))
+        }
+    }
+}
+
+async fn get_build_logs_only(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    match state.db.get_build(id).await {
+        Ok(Some(build)) => {
+            // Read build log file only
+            match tokio::fs::read_to_string(&build.log_path).await {
+                Ok(content) => (StatusCode::OK, content),
+                Err(_) => (StatusCode::NOT_FOUND, String::from("Build log file not found")),
+            }
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, String::from("Build not found")),
+        Err(e) => {
+            warn!("Failed to get build logs: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))
+        }
+    }
+}
+
+async fn get_deploy_logs(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    match state.db.get_build(id).await {
+        Ok(Some(build)) => {
+            // Read deploy log file
+            if let Some(deploy_log_path) = &build.deploy_log_path {
+                match tokio::fs::read_to_string(deploy_log_path).await {
+                    Ok(content) => (StatusCode::OK, content),
+                    Err(_) => (StatusCode::OK, String::from("")), // Return empty if no deploy logs yet
+                }
+            } else {
+                (StatusCode::OK, String::from("")) // No deploy log path configured
+            }
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, String::from("Build not found")),
+        Err(e) => {
+            warn!("Failed to get deploy logs: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))
         }
     }

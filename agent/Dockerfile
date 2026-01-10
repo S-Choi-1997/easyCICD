@@ -43,9 +43,6 @@ COPY --from=builder /build/target/release/lightweight-ci /app/
 # Copy migrations
 COPY --from=builder /build/migrations /app/migrations
 
-# Copy frontend files
-COPY ../frontend /app/frontend
-
 # Create data directories
 RUN mkdir -p /data/easycicd
 
