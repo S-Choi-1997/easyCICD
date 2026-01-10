@@ -4,11 +4,13 @@ mod builds;
 mod ws;
 mod settings;
 mod github_api;
+pub mod middleware;
 
 pub use webhook::github_webhook;
 pub use projects::projects_routes;
 pub use builds::builds_routes;
 pub use ws::ws_handler;
+pub use middleware::TraceIdLayer;
 
 use axum::{routing::{get, post, delete}, Router};
 use crate::state::AppState;

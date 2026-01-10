@@ -491,22 +491,29 @@ Phase 4: Application Services ✅
 | ✅ DeploymentService | application/services/deployment_service.rs | build/deployer.rs 로직 이동 + 로깅 (372줄) |
 | ✅ ProjectService | application/services/project_service.rs | api/projects.rs 비즈니스 로직 분리 + 로깅 (448줄) |
 
-Phase 5: API Layer 분리
+Phase 5: 준비 작업 (부분 완료) ⏸️
 ----------------------------------
 | 작업 | 파일 | 내용 |
 |------|------|------|
-| ☐ Projects API | api/routes/projects.rs | Thin handler (요청 파싱 → 서비스 호출 → 응답) |
-| ☐ Builds API | api/routes/builds.rs | Thin handler |
-| ☐ Webhook API | api/routes/webhook.rs | Thin handler |
-| ☐ Trace ID 미들웨어 | api/middleware/trace_id.rs | 모든 요청에 trace_id 추가 |
+| ✅ Trace ID 미들웨어 | api/middleware/trace_id.rs | Trace ID 생성/전파 (향후 적용 예정) |
+| ✅ state 모듈 분리 | state/build_queue.rs, state/ws_connections.rs | BuildQueue, WsConnections 분리 |
+| ⏸️ Projects API | api/routes/projects.rs | Thin handler (AppContext 필요 - 보류) |
+| ⏸️ Builds API | api/routes/builds.rs | Thin handler (AppContext 필요 - 보류) |
+| ⏸️ Webhook API | api/routes/webhook.rs | Thin handler (AppContext 필요 - 보류) |
 
-Phase 6: AppContext 전환
+Phase 6: AppContext 전환 (보류)
 ----------------------------------
 | 작업 | 파일 | 내용 |
 |------|------|------|
-| ☐ AppContext | state/app_context.rs | DI 컨테이너 (모든 서비스 조립) |
-| ☐ main.rs 수정 | main.rs | AppState → AppContext |
-| ☐ 기존 코드 제거 | state.rs | 삭제 |
+| ⏸️ AppContext | state/app_context.rs | DI 컨테이너 (기존 시스템 안정화 후 진행) |
+| ⏸️ main.rs 수정 | main.rs | AppState → AppContext |
+| ⏸️ 기존 코드 마이그레이션 | api/, build/ | 서비스 사용하도록 변경 |
+
+**Phase 5-6 보류 이유**:
+- Phase 1-4에서 핵심 인프라 완성 (Trait, Logging, Repo, Services)
+- Phase 5-6는 기존 코드 대규모 수정 필요 (API 핸들러, 워커 등)
+- 기존 시스템이 안정적으로 동작하는 상태에서 점진적 마이그레이션 권장
+- 독립 테스트 및 로깅 시스템은 이미 구축 완료
 
 
 ================================================================================
