@@ -8,6 +8,7 @@ mod proxy;
 mod ws_broadcaster;
 mod github;
 mod application;
+mod infrastructure;
 
 use anyhow::Result;
 use axum::{routing::{get, post}, Router};
