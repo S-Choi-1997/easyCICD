@@ -415,3 +415,236 @@ docker inspect tt-green | jq '.[0].NetworkSettings.Networks | keys'
 
 # 프록시 테스트
 curl http://localhost:9999/tt/
+
+
+================================================================================
+아키텍처 문제점 (모듈화 리팩토링 필요성)
+================================================================================
+
+❌ 문제 14: AppState God Object 패턴
+--------------------------------------------------------------------------------
+원인: 모든 의존성이 AppState에 집중됨
+현재 구조:
+  - AppState가 db, event_tx, build_queue, ws_connections, config 등 모두 포함
+  - 모든 API 핸들러, 빌드 시스템, 프록시가 AppState에 의존
+  - 단위 테스트가 불가능 (전체 AppState 필요)
+
+문제점:
+  1. 테스트 어려움: Mock 주입 불가능, 전체 시스템 필요
+  2. 높은 결합도: 한 부분 변경 시 전체 영향
+  3. 불명확한 의존성: 각 모듈이 실제로 무엇을 필요로 하는지 불명확
+
+예시 (agent/src/api/projects.rs):
+```rust
+async fn create_project(State(state): State<AppState>, ...) -> impl IntoResponse {
+    // state.db, state.docker, state.event_tx 모두 접근 가능
+    // 하지만 이 핸들러는 실제로 db만 필요할 수도 있음
+}
+```
+
+필요한 해결책:
+  - Trait 기반 의존성 주입
+  - 각 모듈이 필요한 의존성만 받도록 분리
+  - AppContext가 서비스들을 조립하되, 서비스는 trait에만 의존
+
+파일: agent/src/state.rs
+
+❌ 문제 15: 비즈니스 로직과 HTTP 핸들러 혼재
+--------------------------------------------------------------------------------
+원인: API 레이어에 비즈니스 로직이 직접 작성됨
+현재 구조:
+  - agent/src/api/projects.rs (521 lines)
+  - 프로젝트 생성, 삭제, 컨테이너 관리 로직이 모두 API 핸들러에 포함
+  - HTTP 요청 처리와 비즈니스 로직이 섞여있음
+
+문제점:
+  1. 테스트 어려움: HTTP 레이어 없이는 비즈니스 로직 테스트 불가
+  2. 재사용 불가: Webhook, WebSocket 등에서 같은 로직 재사용 어려움
+  3. 가독성 저하: 521줄의 파일에서 핵심 로직 찾기 어려움
+
+예시 (agent/src/api/projects.rs:180-220):
+```rust
+async fn delete_project(State(state): State<AppState>, Path(id): Path<i64>) -> impl IntoResponse {
+    // 1. HTTP 요청 파싱
+    // 2. 프로젝트 조회
+    // 3. 컨테이너 중지/삭제 (비즈니스 로직!)
+    // 4. 파일 시스템 정리 (비즈니스 로직!)
+    // 5. DB 삭제
+    // 6. HTTP 응답 생성
+    // 모두 한 함수에 혼재
+}
+```
+
+필요한 해결책:
+  - Application Service 레이어 분리 (ProjectService, BuildService 등)
+  - API 핸들러는 요청 파싱 + 서비스 호출 + 응답 생성만 담당
+  - 비즈니스 로직은 서비스 레이어에서 독립적으로 테스트
+
+파일: agent/src/api/projects.rs, agent/src/api/builds.rs
+
+❌ 문제 16: 이벤트 발행 코드 분산
+--------------------------------------------------------------------------------
+원인: 이벤트 발행이 여러 모듈에 흩어져 있음
+현재 구조:
+  - agent/src/build/executor.rs: 빌드 이벤트 발행
+  - agent/src/build/deployer.rs: 배포 이벤트 발행
+  - agent/src/api/webhook.rs: Webhook 이벤트 발행
+  - 각 모듈이 직접 state.event_tx.send() 호출
+
+문제점:
+  1. 로깅 불가: 어디서 어떤 이벤트가 발행되는지 추적 어려움
+  2. 중복 코드: 이벤트 발행 전후 로직 중복
+  3. 에러 처리 일관성 부족: 각 모듈마다 다른 방식으로 에러 처리
+
+예시 (agent/src/build/executor.rs):
+```rust
+// 이벤트 발행만 하고 로깅 없음
+let _ = self.state.event_tx.send(Event::BuildStatus { ... });
+```
+
+필요한 해결책:
+  - EventBus trait 정의
+  - 모든 이벤트 발행을 EventBus를 통해 수행
+  - BoundaryLogger에서 모든 이벤트 발행 로깅
+  - 중앙화된 에러 처리
+
+파일: agent/src/events.rs, agent/src/build/executor.rs, agent/src/build/deployer.rs
+
+❌ 문제 17: 테스트 불가능한 구조
+--------------------------------------------------------------------------------
+원인: Mock 주입이 불가능한 설계
+현재 구조:
+  - BuildExecutor, Deployer가 직접 DockerClient를 생성
+  - 테스트 시 실제 Docker daemon 필요
+  - 단위 테스트 작성 불가능
+
+문제점:
+  1. 느린 테스트: 실제 Docker 컨테이너 실행 필요
+  2. 불안정한 테스트: 네트워크, Docker daemon 상태에 의존
+  3. CI/CD 어려움: Docker-in-Docker 환경 필요
+
+예시 (agent/src/build/executor.rs):
+```rust
+pub struct BuildExecutor {
+    state: Arc<AppState>,
+    docker: DockerClient, // 직접 생성, Mock 주입 불가
+}
+```
+
+필요한 해결책:
+  - ContainerRuntime trait 정의
+  - DockerClient가 trait 구현
+  - MockContainerRuntime 작성
+  - 서비스 생성 시 trait을 주입
+
+파일: agent/src/build/executor.rs, agent/src/build/deployer.rs, agent/src/docker/client.rs
+
+❌ 문제 18: 모듈 간 통신 로깅 부재
+--------------------------------------------------------------------------------
+원인: 모듈 간 호출이 로깅되지 않음
+현재 구조:
+  - API → BuildService 호출: 로깅 없음
+  - BuildService → DockerClient 호출: 로깅 없음
+  - BuildService → Database 호출: 로깅 없음
+  - 전체 플로우 추적 불가능
+
+문제점:
+  1. 디버깅 어려움: 문제 발생 시 어느 단계에서 실패했는지 파악 어려움
+  2. 성능 분석 불가: 각 단계별 소요 시간 측정 불가
+  3. 운영 어려움: 프로덕션 환경에서 문제 추적 어려움
+
+예시 (현재 로그):
+```
+[INFO] Starting build
+[INFO] Build completed
+// 중간 과정이 모두 블랙박스
+```
+
+필요한 로그 (목표):
+```
+[10:15:23] [INFO] [abc-123] [API→BuildService] execute_build [ENTRY] build_id=42
+[10:15:23] [INFO] [abc-123] [BuildService→BuildRepo] get [CALL]
+[10:15:23] [INFO] [abc-123] [BuildService→BuildRepo] get [←DONE] 5ms
+[10:15:23] [INFO] [abc-123] [BuildService→Docker] run_build [EXT→]
+[10:15:45] [INFO] [abc-123] [BuildService→Docker] run_build [←DONE] 22000ms
+[10:15:45] [INFO] [abc-123] [API→BuildService] execute_build [←DONE] 22050ms
+```
+
+필요한 해결책:
+  - BoundaryLogger 구현 (모든 모듈 경계에서 로깅)
+  - Trace ID 생성 및 전파
+  - API 미들웨어에서 trace ID 추가
+  - 모든 서비스 호출 시 로깅
+
+파일: 전체 (리팩토링 필요)
+
+❌ 문제 19: 데이터베이스 접근 분산
+--------------------------------------------------------------------------------
+원인: 여러 모듈에서 직접 DB 쿼리 실행
+현재 구조:
+  - agent/src/db/queries.rs에 모든 쿼리 집중
+  - API, BuildExecutor, Deployer가 직접 queries 모듈 호출
+  - Repository 패턴 미적용
+
+문제점:
+  1. 테스트 어려움: 실제 SQLite 필요
+  2. 로직 중복: 여러 곳에서 유사한 DB 로직 반복
+  3. 변경 어려움: DB 스키마 변경 시 여러 곳 수정 필요
+
+필요한 해결책:
+  - Repository trait 정의 (ProjectRepository, BuildRepository)
+  - SqliteRepository 구현
+  - MockRepository 작성 (테스트용)
+  - 서비스 레이어에서만 Repository 사용
+
+파일: agent/src/db/queries.rs
+
+❌ 문제 20: API 명세 불일치
+--------------------------------------------------------------------------------
+원인: 코드 변경 시 문서 업데이트 누락
+현재 상태:
+  - API_통신_명세서.txt가 실제 구현과 불일치
+  - 새 API 추가 시 문서 업데이트 누락
+  - 에러 응답 포맷 불일치
+
+문제점:
+  1. 프론트엔드 개발 어려움: 실제 API와 문서가 다름
+  2. 협업 어려움: 다른 개발자가 API 파악 어려움
+  3. 유지보수 어려움: 문서 신뢰도 낮음
+
+필요한 해결책:
+  - OpenAPI 3.0 스펙 자동 생성 (utoipa 크레이트)
+  - 코드에서 문서 생성 (Single Source of Truth)
+  - API 변경 시 자동으로 문서 업데이트
+
+파일: API_통신_명세서.txt (자동 생성으로 대체 필요)
+
+✅ 리팩토링 계획 (Phase 11)
+--------------------------------------------------------------------------------
+위 문제들을 해결하기 위한 리팩토링 계획:
+
+1. Trait 기반 의존성 주입 (문제 14, 17, 19 해결)
+   - ProjectRepository, BuildRepository, SettingsRepository trait
+   - ContainerRuntime trait
+   - EventBus trait
+
+2. Application Service 레이어 분리 (문제 15 해결)
+   - ProjectService, BuildService, DeploymentService
+   - 비즈니스 로직과 HTTP 핸들러 분리
+
+3. 통합 로깅 시스템 (문제 16, 18 해결)
+   - BoundaryLogger 구현
+   - Trace ID 전파
+   - 모든 모듈 경계에서 로깅
+
+4. API 문서 자동 생성 (문제 20 해결)
+   - OpenAPI 3.0 스펙
+   - 코드에서 문서 생성
+
+상세 계획: 개발_진행_상황.txt Phase 11 참조
+
+교훈:
+  - 초기 설계부터 테스트 가능성 고려 필요
+  - 명확한 레이어 분리 (API, Application, Infrastructure)
+  - 관찰 가능성(Observability) 설계 필수 (로깅, 추적)
+  - 문서는 코드에서 자동 생성

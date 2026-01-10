@@ -447,20 +447,85 @@ easycicd/
 
 
 ================================================================================
+리팩토링: 모듈화 및 로깅 시스템 구축 (진행 중) 🆕
+================================================================================
+
+목표: 독립 테스트 가능 / 모듈 간 간섭 없음 / 상세 로깅으로 빠른 문제 추적
+
+Phase 1: Trait 정의
+----------------------------------
+| 작업 | 파일 | 내용 |
+|------|------|------|
+| ☐ Repository Trait | application/ports/repositories.rs | ProjectRepository, BuildRepository, SettingsRepository |
+| ☐ Container Trait | application/ports/container_runtime.rs | ContainerRuntime (run_build, run_runtime, stop, remove) |
+| ☐ EventBus Trait | application/events/event_bus.rs | EventBus (emit, subscribe) |
+
+Phase 2: 로깅 시스템 구축
+----------------------------------
+| 작업 | 파일 | 내용 |
+|------|------|------|
+| ☐ BoundaryLogger | infrastructure/logging/boundary_logger.rs | 모든 모듈 경계 로깅 (API→Service, Service→Repo, Service→Docker) |
+| ☐ TraceContext | infrastructure/logging/trace_context.rs | Trace ID 생성 및 HTTP 헤더 전파 |
+| ☐ Timer | infrastructure/logging/boundary_logger.rs | 성능 측정용 타이머 (elapsed_ms) |
+
+로깅 포맷: [시간] [레벨] [trace_id] [호출자→피호출자] [작업] [상태] [duration]
+
+Phase 3: Infrastructure 구현
+----------------------------------
+| 작업 | 파일 | 내용 |
+|------|------|------|
+| ☐ SqliteProjectRepo | infrastructure/database/sqlite_repo.rs | ProjectRepository 구현 (기존 queries.rs 로직 활용) |
+| ☐ SqliteBuildRepo | infrastructure/database/sqlite_repo.rs | BuildRepository 구현 |
+| ☐ SqliteSettingsRepo | infrastructure/database/sqlite_repo.rs | SettingsRepository 구현 |
+| ☐ DockerClient 수정 | infrastructure/docker/client.rs | ContainerRuntime trait 구현 |
+| ☐ MockDockerClient | infrastructure/docker/mock_client.rs | 테스트용 Mock 구현 |
+| ☐ BroadcastEventBus | application/events/event_bus.rs | EventBus 구현 (기존 broadcast 활용) |
+
+Phase 4: Application Services
+----------------------------------
+| 작업 | 파일 | 내용 |
+|------|------|------|
+| ☐ BuildService | application/services/build_service.rs | build/executor.rs 로직 이동 + 로깅 |
+| ☐ DeploymentService | application/services/deployment_service.rs | build/deployer.rs 로직 이동 + 로깅 |
+| ☐ ProjectService | application/services/project_service.rs | api/projects.rs 비즈니스 로직 분리 + 로깅 |
+
+Phase 5: API Layer 분리
+----------------------------------
+| 작업 | 파일 | 내용 |
+|------|------|------|
+| ☐ Projects API | api/routes/projects.rs | Thin handler (요청 파싱 → 서비스 호출 → 응답) |
+| ☐ Builds API | api/routes/builds.rs | Thin handler |
+| ☐ Webhook API | api/routes/webhook.rs | Thin handler |
+| ☐ Trace ID 미들웨어 | api/middleware/trace_id.rs | 모든 요청에 trace_id 추가 |
+
+Phase 6: AppContext 전환
+----------------------------------
+| 작업 | 파일 | 내용 |
+|------|------|------|
+| ☐ AppContext | state/app_context.rs | DI 컨테이너 (모든 서비스 조립) |
+| ☐ main.rs 수정 | main.rs | AppState → AppContext |
+| ☐ 기존 코드 제거 | state.rs | 삭제 |
+
+
+================================================================================
 다음 단계
 ================================================================================
 
-즉시 실행:
-1. Dashboard URL 링크 분리 구현
-2. README.md 작성
-3. 실제 프로젝트로 테스트
+즉시 실행 (Phase 11 리팩토링):
+1. 디렉토리 구조 생성 및 Trait 정의
+2. 통합 로깅 시스템 구축 (BoundaryLogger)
+3. Repository 구현
+4. Application Services 작성
+5. API Layer 리팩토링
 
-추후 개선:
-4. 로그 스트리밍 구현
-5. WebSocket 실시간 업데이트
-6. 에러 복구 메커니즘
-7. 테스트 작성
-8. 문서화 완성
+추후 개선 (기존 TODO):
+6. Dashboard URL 링크 분리 구현
+7. README.md 작성
+8. 로그 스트리밍 구현
+9. WebSocket 실시간 업데이트
+10. 에러 복구 메커니즘
+11. 테스트 작성
+12. 문서화 완성
 
 
 ================================================================================
