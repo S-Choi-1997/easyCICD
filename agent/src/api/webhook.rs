@@ -12,7 +12,8 @@ use tracing::{info, warn};
 
 use crate::db::models::{BuildStatus, CreateBuild};
 use crate::events::Event;
-use crate::state::AppState;
+use crate::state::AppContext;
+use crate::infrastructure::logging::{TraceContext, Timer};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -53,13 +54,19 @@ pub struct WebhookResponse {
 }
 
 pub async fn github_webhook(
-    State(state): State<AppState>,
+    State(ctx): State<AppContext>,
     headers: HeaderMap,
     body: String,
 ) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "POST", "/webhook/github", "webhook_received");
+
     // Verify signature
-    if let Err(e) = verify_signature(&state, &headers, &body).await {
-        warn!("Webhook signature verification failed: {}", e);
+    if let Err(e) = verify_signature(&ctx, &headers, &body).await {
+        warn!("[{}] Webhook signature verification failed: {}", trace_id, e);
+        ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "401");
         return (
             StatusCode::UNAUTHORIZED,
             Json(WebhookResponse {
@@ -73,7 +80,8 @@ pub async fn github_webhook(
     let webhook: GithubWebhook = match serde_json::from_str(&body) {
         Ok(w) => w,
         Err(e) => {
-            warn!("Failed to parse webhook payload: {}", e);
+            warn!("[{}] Failed to parse webhook payload: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "400");
             return (
                 StatusCode::BAD_REQUEST,
                 Json(WebhookResponse {
@@ -84,7 +92,7 @@ pub async fn github_webhook(
         }
     };
 
-    info!("Received webhook for repo: {}", webhook.repository.full_name);
+    info!("[{}] Received webhook for repo: {}", trace_id, webhook.repository.full_name);
 
     // Extract branch from ref (refs/heads/main -> main)
     let branch = webhook
@@ -94,10 +102,11 @@ pub async fn github_webhook(
         .unwrap_or("main");
 
     // Find matching project
-    let projects = match state.db.list_projects().await {
+    let projects = match ctx.project_repo.list().await {
         Ok(p) => p,
         Err(e) => {
-            warn!("Failed to list projects: {}", e);
+            warn!("[{}] Failed to list projects: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "500");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(WebhookResponse {
@@ -116,9 +125,10 @@ pub async fn github_webhook(
         Some(p) => p,
         None => {
             info!(
-                "No matching project found for repo {} branch {}",
-                webhook.repository.full_name, branch
+                "[{}] No matching project found for repo {} branch {}",
+                trace_id, webhook.repository.full_name, branch
             );
+            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "200");
             return (
                 StatusCode::OK,
                 Json(WebhookResponse {
@@ -133,7 +143,8 @@ pub async fn github_webhook(
     let head_commit = match webhook.head_commit {
         Some(c) => c,
         None => {
-            info!("No head commit in webhook");
+            info!("[{}] No head commit in webhook", trace_id);
+            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "200");
             return (
                 StatusCode::OK,
                 Json(WebhookResponse {
@@ -157,9 +168,10 @@ pub async fn github_webhook(
 
     if !matches_filter {
         info!(
-            "Changed files do not match path filter: {}",
-            project.path_filter
+            "[{}] Changed files do not match path filter: {}",
+            trace_id, project.path_filter
         );
+        ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "200");
         return (
             StatusCode::OK,
             Json(WebhookResponse {
@@ -177,10 +189,11 @@ pub async fn github_webhook(
         author: Some(format!("{} <{}>", head_commit.author.name, head_commit.author.email)),
     };
 
-    let build = match state.db.create_build(create_build).await {
+    let build = match ctx.build_repo.create(create_build).await {
         Ok(b) => b,
         Err(e) => {
-            warn!("Failed to create build: {}", e);
+            warn!("[{}] Failed to create build: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "500");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(WebhookResponse {
@@ -192,20 +205,22 @@ pub async fn github_webhook(
     };
 
     info!(
-        "Created build #{} for project {}",
-        build.build_number, project.name
+        "[{}] Created build #{} for project {}",
+        trace_id, build.build_number, project.name
     );
 
     // Enqueue build
-    state.build_queue.enqueue(project.id, build.id).await;
+    ctx.build_queue.enqueue(project.id, build.id).await;
 
     // Emit event
-    state.emit_event(Event::BuildStatus {
+    ctx.event_bus.emit(Event::BuildStatus {
         build_id: build.id,
         project_id: project.id,
         status: BuildStatus::Queued,
         timestamp: Event::now(),
-    });
+    }).await;
+
+    ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "200");
 
     (
         StatusCode::OK,
@@ -243,9 +258,9 @@ fn match_path_filter(pattern: &str, files: &[String]) -> bool {
     files.iter().any(|f| globset.is_match(f))
 }
 
-async fn verify_signature(state: &AppState, headers: &HeaderMap, body: &str) -> Result<(), String> {
+async fn verify_signature(ctx: &AppContext, headers: &HeaderMap, body: &str) -> Result<(), String> {
     // Get webhook secret from database
-    let secret = state.db.get_setting("webhook_secret")
+    let secret = ctx.settings_repo.get("webhook_secret")
         .await
         .map_err(|e| format!("Failed to get webhook secret: {}", e))?
         .ok_or("Webhook secret not configured")?;

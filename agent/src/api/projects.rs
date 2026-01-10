@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{delete, get, post},
     Json, Router,
@@ -12,9 +12,10 @@ use tracing::{info, warn};
 
 use crate::db::models::{CreateBuild, CreateProject, Slot};
 use crate::docker::client::DockerClient;
-use crate::state::AppState;
+use crate::state::AppContext;
+use crate::infrastructure::logging::{TraceContext, Timer};
 
-pub fn projects_routes() -> Router<AppState> {
+pub fn projects_routes() -> Router<AppContext> {
     Router::new()
         .route("/", get(list_projects).post(create_project))
         .route("/{id}", get(get_project).delete(delete_project))
@@ -24,25 +25,50 @@ pub fn projects_routes() -> Router<AppState> {
         .route("/{id}/containers/restart", post(restart_containers))
 }
 
-async fn list_projects(State(state): State<AppState>) -> impl IntoResponse {
-    match state.db.list_projects().await {
-        Ok(projects) => (StatusCode::OK, Json(projects)),
+async fn list_projects(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "GET", "/api/projects", "");
+
+    match ctx.project_repo.list().await {
+        Ok(projects) => {
+            ctx.logger.api_exit(&trace_id, "GET", "/api/projects", timer.elapsed_ms(), "200");
+            (StatusCode::OK, Json(projects))
+        }
         Err(e) => {
-            warn!("Failed to list projects: {}", e);
+            warn!("[{}] Failed to list projects: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "GET", "/api/projects", timer.elapsed_ms(), "500");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(vec![]))
         }
     }
 }
 
 async fn get_project(
-    State(state): State<AppState>,
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    match state.db.get_project(id).await {
-        Ok(Some(project)) => (StatusCode::OK, Json(Some(project))),
-        Ok(None) => (StatusCode::NOT_FOUND, Json(None)),
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "GET", &format!("/api/projects/{}", id), "");
+
+    match ctx.project_repo.get(id).await {
+        Ok(Some(project)) => {
+            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/projects/{}", id), timer.elapsed_ms(), "200");
+            (StatusCode::OK, Json(Some(project)))
+        }
+        Ok(None) => {
+            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/projects/{}", id), timer.elapsed_ms(), "404");
+            (StatusCode::NOT_FOUND, Json(None))
+        }
         Err(e) => {
-            warn!("Failed to get project: {}", e);
+            warn!("[{}] Failed to get project: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/projects/{}", id), timer.elapsed_ms(), "500");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(None))
         }
     }
@@ -65,9 +91,15 @@ struct CreateProjectRequest {
 }
 
 async fn create_project(
-    State(state): State<AppState>,
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
     Json(req): Json<CreateProjectRequest>,
 ) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "POST", "/api/projects", &format!("name={}", req.name));
+
     let create_project = CreateProject {
         name: req.name,
         repo: req.repo,
@@ -83,10 +115,14 @@ async fn create_project(
         runtime_port: req.runtime_port,
     };
 
-    match state.db.create_project(create_project).await {
-        Ok(project) => (StatusCode::CREATED, Json(Some(project))),
+    match ctx.project_repo.create(create_project).await {
+        Ok(project) => {
+            ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), "201");
+            (StatusCode::CREATED, Json(Some(project)))
+        }
         Err(e) => {
-            warn!("Failed to create project: {}", e);
+            warn!("[{}] Failed to create project: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), "500");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(None))
         }
     }
@@ -94,20 +130,28 @@ async fn create_project(
 
 
 async fn trigger_build(
-    State(state): State<AppState>,
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "POST", &format!("/api/projects/{}/builds", id), &format!("project_id={}", id));
+
     // Get project
-    let project = match state.db.get_project(id).await {
+    let project = match ctx.project_repo.get(id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/builds", id), timer.elapsed_ms(), "404");
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Project not found"})),
             )
         }
         Err(e) => {
-            warn!("Failed to get project: {}", e);
+            warn!("[{}] Failed to get project: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/builds", id), timer.elapsed_ms(), "500");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Database error"})),
@@ -189,10 +233,11 @@ async fn trigger_build(
         author,
     };
 
-    let build = match state.db.create_build(create_build).await {
+    let build = match ctx.build_repo.create(create_build).await {
         Ok(b) => b,
         Err(e) => {
-            warn!("Failed to create build: {}", e);
+            warn!("[{}] Failed to create build: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/builds", id), timer.elapsed_ms(), "500");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Failed to create build"})),
@@ -201,7 +246,9 @@ async fn trigger_build(
     };
 
     // Enqueue build
-    state.build_queue.enqueue(project.id, build.id).await;
+    ctx.build_queue.enqueue(project.id, build.id).await;
+
+    ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/builds", id), timer.elapsed_ms(), "201");
 
     (
         StatusCode::CREATED,
@@ -214,20 +261,28 @@ async fn trigger_build(
 }
 
 async fn delete_project(
-    State(state): State<AppState>,
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "DELETE", &format!("/api/projects/{}", id), &format!("project_id={}", id));
+
     // Get project first
-    let project = match state.db.get_project(id).await {
+    let project = match ctx.project_repo.get(id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
+            ctx.logger.api_exit(&trace_id, "DELETE", &format!("/api/projects/{}", id), timer.elapsed_ms(), "404");
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Project not found"})),
             )
         }
         Err(e) => {
-            warn!("Failed to get project: {}", e);
+            warn!("[{}] Failed to get project: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "DELETE", &format!("/api/projects/{}", id), timer.elapsed_ms(), "500");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Database error"})),
@@ -235,19 +290,7 @@ async fn delete_project(
         }
     };
 
-    // Create Docker client for cleanup
-    let docker = match DockerClient::new() {
-        Ok(d) => d,
-        Err(e) => {
-            warn!("Failed to create Docker client: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Docker error"})),
-            );
-        }
-    };
-
-    // Stop and remove containers
+    // Stop and remove containers using context's docker
     for slot in [Slot::Blue, Slot::Green] {
         let container_id = match slot {
             Slot::Blue => &project.blue_container_id,
@@ -256,9 +299,9 @@ async fn delete_project(
 
         // Try to stop by container ID first
         if let Some(cid) = container_id {
-            info!("Stopping container {} for project {}", cid, project.name);
-            if let Err(e) = docker.stop_container(cid).await {
-                warn!("Failed to stop container {}: {}", cid, e);
+            info!("[{}] Stopping container {} for project {}", trace_id, cid, project.name);
+            if let Err(e) = ctx.docker.stop_container(cid).await {
+                warn!("[{}] Failed to stop container {}: {}", trace_id, cid, e);
             }
         }
 
@@ -268,10 +311,10 @@ async fn delete_project(
             Slot::Green => format!("project-{}-green", project.id),
         };
 
-        info!("Attempting to stop container by name: {}", container_name);
-        if let Err(e) = docker.stop_container(&container_name).await {
+        info!("[{}] Attempting to stop container by name: {}", trace_id, container_name);
+        if let Err(e) = ctx.docker.stop_container(&container_name).await {
             // This is expected to fail if container doesn't exist, so just debug log
-            info!("Container {} not found or already stopped", container_name);
+            info!("[{}] Container {} not found or already stopped", trace_id, container_name);
         }
     }
 
@@ -283,22 +326,21 @@ async fn delete_project(
 
     for path in [workspace_path, cache_path, logs_path] {
         if path.exists() {
-            info!("Removing directory: {:?}", path);
+            info!("[{}] Removing directory: {:?}", trace_id, path);
             if let Err(e) = fs::remove_dir_all(&path).await {
-                warn!("Failed to remove directory {:?}: {}", path, e);
+                warn!("[{}] Failed to remove directory {:?}: {}", trace_id, path, e);
             }
         }
     }
 
     // Remove all build output directories for this project
-    // Since we don't have the exact build IDs, remove by pattern
     if output_base.exists() {
         if let Ok(mut entries) = fs::read_dir(&output_base).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 // Remove all build directories (they will be cascade deleted from DB anyway)
                 if entry.path().is_dir() {
                     if let Err(e) = fs::remove_dir_all(entry.path()).await {
-                        warn!("Failed to remove build output {:?}: {}", entry.path(), e);
+                        warn!("[{}] Failed to remove build output {:?}: {}", trace_id, entry.path(), e);
                     }
                 }
             }
@@ -306,15 +348,17 @@ async fn delete_project(
     }
 
     // Delete from database (this will cascade delete builds due to ON DELETE CASCADE)
-    if let Err(e) = state.db.delete_project(id).await {
-        warn!("Failed to delete project from database: {}", e);
+    if let Err(e) = ctx.project_repo.delete(id).await {
+        warn!("[{}] Failed to delete project from database: {}", trace_id, e);
+        ctx.logger.api_exit(&trace_id, "DELETE", &format!("/api/projects/{}", id), timer.elapsed_ms(), "500");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": "Failed to delete project"})),
         );
     }
 
-    info!("Project {} deleted successfully", project.name);
+    info!("[{}] Project {} deleted successfully", trace_id, project.name);
+    ctx.logger.api_exit(&trace_id, "DELETE", &format!("/api/projects/{}", id), timer.elapsed_ms(), "200");
 
     (
         StatusCode::OK,
@@ -323,35 +367,31 @@ async fn delete_project(
 }
 
 async fn start_containers(
-    State(state): State<AppState>,
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "POST", &format!("/api/projects/{}/containers/start", id), &format!("project_id={}", id));
+
     // Get project
-    let project = match state.db.get_project(id).await {
+    let project = match ctx.project_repo.get(id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/start", id), timer.elapsed_ms(), "404");
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Project not found"})),
             )
         }
         Err(e) => {
-            warn!("Failed to get project: {}", e);
+            warn!("[{}] Failed to get project: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/start", id), timer.elapsed_ms(), "500");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Database error"})),
-            );
-        }
-    };
-
-    // Create Docker client
-    let docker = match DockerClient::new() {
-        Ok(d) => d,
-        Err(e) => {
-            warn!("Failed to create Docker client: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Docker error"})),
             );
         }
     };
@@ -365,9 +405,9 @@ async fn start_containers(
             Slot::Green => format!("project-{}-green", project.id),
         };
 
-        match docker.start_container(&container_name).await {
+        match ctx.docker.start_container(&container_name).await {
             Ok(_) => {
-                info!("Started container: {}", container_name);
+                info!("[{}] Started container: {}", trace_id, container_name);
                 results.push(serde_json::json!({
                     "slot": format!("{:?}", slot).to_lowercase(),
                     "status": "started",
@@ -375,7 +415,7 @@ async fn start_containers(
                 }));
             }
             Err(e) => {
-                warn!("Failed to start container {}: {}", container_name, e);
+                warn!("[{}] Failed to start container {}: {}", trace_id, container_name, e);
                 results.push(serde_json::json!({
                     "slot": format!("{:?}", slot).to_lowercase(),
                     "status": "error",
@@ -385,39 +425,36 @@ async fn start_containers(
         }
     }
 
+    ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/start", id), timer.elapsed_ms(), "200");
     (StatusCode::OK, Json(serde_json::json!({ "results": results })))
 }
 
 async fn stop_containers(
-    State(state): State<AppState>,
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "POST", &format!("/api/projects/{}/containers/stop", id), &format!("project_id={}", id));
+
     // Get project
-    let project = match state.db.get_project(id).await {
+    let project = match ctx.project_repo.get(id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/stop", id), timer.elapsed_ms(), "404");
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Project not found"})),
             )
         }
         Err(e) => {
-            warn!("Failed to get project: {}", e);
+            warn!("[{}] Failed to get project: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/stop", id), timer.elapsed_ms(), "500");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Database error"})),
-            );
-        }
-    };
-
-    // Create Docker client
-    let docker = match DockerClient::new() {
-        Ok(d) => d,
-        Err(e) => {
-            warn!("Failed to create Docker client: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Docker error"})),
             );
         }
     };
@@ -431,9 +468,9 @@ async fn stop_containers(
             Slot::Green => format!("project-{}-green", project.id),
         };
 
-        match docker.stop_container(&container_name).await {
+        match ctx.docker.stop_container(&container_name).await {
             Ok(_) => {
-                info!("Stopped container: {}", container_name);
+                info!("[{}] Stopped container: {}", trace_id, container_name);
                 results.push(serde_json::json!({
                     "slot": format!("{:?}", slot).to_lowercase(),
                     "status": "stopped",
@@ -441,7 +478,7 @@ async fn stop_containers(
                 }));
             }
             Err(e) => {
-                warn!("Failed to stop container {}: {}", container_name, e);
+                warn!("[{}] Failed to stop container {}: {}", trace_id, container_name, e);
                 results.push(serde_json::json!({
                     "slot": format!("{:?}", slot).to_lowercase(),
                     "status": "error",
@@ -451,39 +488,36 @@ async fn stop_containers(
         }
     }
 
+    ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/stop", id), timer.elapsed_ms(), "200");
     (StatusCode::OK, Json(serde_json::json!({ "results": results })))
 }
 
 async fn restart_containers(
-    State(state): State<AppState>,
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "POST", &format!("/api/projects/{}/containers/restart", id), &format!("project_id={}", id));
+
     // Get project
-    let project = match state.db.get_project(id).await {
+    let project = match ctx.project_repo.get(id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/restart", id), timer.elapsed_ms(), "404");
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Project not found"})),
             )
         }
         Err(e) => {
-            warn!("Failed to get project: {}", e);
+            warn!("[{}] Failed to get project: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/restart", id), timer.elapsed_ms(), "500");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Database error"})),
-            );
-        }
-    };
-
-    // Create Docker client
-    let docker = match DockerClient::new() {
-        Ok(d) => d,
-        Err(e) => {
-            warn!("Failed to create Docker client: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Docker error"})),
             );
         }
     };
@@ -497,9 +531,9 @@ async fn restart_containers(
             Slot::Green => format!("project-{}-green", project.id),
         };
 
-        match docker.restart_container(&container_name).await {
+        match ctx.docker.restart_container(&container_name).await {
             Ok(_) => {
-                info!("Restarted container: {}", container_name);
+                info!("[{}] Restarted container: {}", trace_id, container_name);
                 results.push(serde_json::json!({
                     "slot": format!("{:?}", slot).to_lowercase(),
                     "status": "restarted",
@@ -507,7 +541,7 @@ async fn restart_containers(
                 }));
             }
             Err(e) => {
-                warn!("Failed to restart container {}: {}", container_name, e);
+                warn!("[{}] Failed to restart container {}: {}", trace_id, container_name, e);
                 results.push(serde_json::json!({
                     "slot": format!("{:?}", slot).to_lowercase(),
                     "status": "error",
@@ -517,5 +551,6 @@ async fn restart_containers(
         }
     }
 
+    ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/restart", id), timer.elapsed_ms(), "200");
     (StatusCode::OK, Json(serde_json::json!({ "results": results })))
 }

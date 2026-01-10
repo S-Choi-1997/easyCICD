@@ -80,6 +80,14 @@ impl ProjectRepository for SqliteProjectRepository {
         Ok(project)
     }
 
+    async fn get_by_name(&self, name: &str) -> Result<Option<Project>> {
+        let project = sqlx::query_as::<_, Project>("SELECT * FROM projects WHERE name = ?")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(project)
+    }
+
     async fn list(&self) -> Result<Vec<Project>> {
         let projects = sqlx::query_as::<_, Project>("SELECT * FROM projects ORDER BY created_at DESC")
             .fetch_all(&self.pool)
@@ -199,6 +207,16 @@ impl BuildRepository for SqliteBuildRepository {
             "SELECT * FROM builds WHERE project_id = ? ORDER BY started_at DESC LIMIT ?"
         )
         .bind(project_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(builds)
+    }
+
+    async fn list_recent(&self, limit: i64) -> Result<Vec<Build>> {
+        let builds = sqlx::query_as::<_, Build>(
+            "SELECT * FROM builds ORDER BY started_at DESC LIMIT ?"
+        )
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;

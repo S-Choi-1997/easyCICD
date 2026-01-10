@@ -1,12 +1,13 @@
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::state::AppState;
+use crate::state::AppContext;
+use crate::infrastructure::logging::{TraceContext, Timer};
 
 #[derive(Serialize)]
 pub struct WebhookSecretResponse {
@@ -14,27 +15,42 @@ pub struct WebhookSecretResponse {
 }
 
 pub async fn get_webhook_secret(
-    State(state): State<AppState>,
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
-    match state.db.get_setting("webhook_secret").await {
-        Ok(Some(secret)) => (
-            StatusCode::OK,
-            Json(WebhookSecretResponse {
-                webhook_secret: secret,
-            }),
-        ),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(WebhookSecretResponse {
-                webhook_secret: "Not configured".to_string(),
-            }),
-        ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(WebhookSecretResponse {
-                webhook_secret: format!("Error: {}", e),
-            }),
-        ),
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "GET", "/api/settings/webhook-secret", "");
+
+    match ctx.settings_repo.get("webhook_secret").await {
+        Ok(Some(secret)) => {
+            ctx.logger.api_exit(&trace_id, "GET", "/api/settings/webhook-secret", timer.elapsed_ms(), "200");
+            (
+                StatusCode::OK,
+                Json(WebhookSecretResponse {
+                    webhook_secret: secret,
+                }),
+            )
+        }
+        Ok(None) => {
+            ctx.logger.api_exit(&trace_id, "GET", "/api/settings/webhook-secret", timer.elapsed_ms(), "404");
+            (
+                StatusCode::NOT_FOUND,
+                Json(WebhookSecretResponse {
+                    webhook_secret: "Not configured".to_string(),
+                }),
+            )
+        }
+        Err(e) => {
+            ctx.logger.api_exit(&trace_id, "GET", "/api/settings/webhook-secret", timer.elapsed_ms(), "500");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(WebhookSecretResponse {
+                    webhook_secret: format!("Error: {}", e),
+                }),
+            )
+        }
     }
 }
 
@@ -51,12 +67,19 @@ pub struct DomainResponse {
 
 /// Set domain configuration
 pub async fn set_domain(
-    State(state): State<AppState>,
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
     Json(payload): Json<SetDomainRequest>,
 ) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "POST", "/api/settings/domain", &format!("domain={}", payload.domain));
+
     // Validate domain format (basic validation)
     let domain = payload.domain.trim();
     if domain.is_empty() {
+        ctx.logger.api_exit(&trace_id, "POST", "/api/settings/domain", timer.elapsed_ms(), "400");
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -66,7 +89,8 @@ pub async fn set_domain(
     }
 
     // Save domain to settings
-    if let Err(e) = state.db.set_domain(domain).await {
+    if let Err(e) = ctx.settings_repo.set("base_domain", domain).await {
+        ctx.logger.api_exit(&trace_id, "POST", "/api/settings/domain", timer.elapsed_ms(), "500");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
@@ -75,6 +99,7 @@ pub async fn set_domain(
         );
     }
 
+    ctx.logger.api_exit(&trace_id, "POST", "/api/settings/domain", timer.elapsed_ms(), "200");
     (
         StatusCode::OK,
         Json(serde_json::json!({
@@ -85,28 +110,45 @@ pub async fn set_domain(
 }
 
 /// Get current domain configuration
-pub async fn get_domain(State(state): State<AppState>) -> impl IntoResponse {
-    match state.db.get_domain().await {
-        Ok(Some(domain)) => (
-            StatusCode::OK,
-            Json(DomainResponse {
-                configured: true,
-                domain: Some(domain),
-            }),
-        ),
-        Ok(None) => (
-            StatusCode::OK,
-            Json(DomainResponse {
-                configured: false,
-                domain: None,
-            }),
-        ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(DomainResponse {
-                configured: false,
-                domain: Some(format!("Error: {}", e)),
-            }),
-        ),
+pub async fn get_domain(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "GET", "/api/settings/domain", "");
+
+    match ctx.settings_repo.get("base_domain").await {
+        Ok(Some(domain)) => {
+            ctx.logger.api_exit(&trace_id, "GET", "/api/settings/domain", timer.elapsed_ms(), "200");
+            (
+                StatusCode::OK,
+                Json(DomainResponse {
+                    configured: true,
+                    domain: Some(domain),
+                }),
+            )
+        }
+        Ok(None) => {
+            ctx.logger.api_exit(&trace_id, "GET", "/api/settings/domain", timer.elapsed_ms(), "200");
+            (
+                StatusCode::OK,
+                Json(DomainResponse {
+                    configured: false,
+                    domain: None,
+                }),
+            )
+        }
+        Err(e) => {
+            ctx.logger.api_exit(&trace_id, "GET", "/api/settings/domain", timer.elapsed_ms(), "500");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DomainResponse {
+                    configured: false,
+                    domain: Some(format!("Error: {}", e)),
+                }),
+            )
+        }
     }
 }

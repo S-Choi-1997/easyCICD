@@ -1,13 +1,15 @@
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::github::{GitHubClient, ProjectDetector};
-use crate::state::AppState;
+use crate::state::AppContext;
+use crate::infrastructure::logging::{TraceContext, Timer};
 
 #[derive(Debug, Deserialize)]
 pub struct SetPATRequest {
@@ -16,15 +18,23 @@ pub struct SetPATRequest {
 
 /// Set GitHub PAT (global configuration)
 pub async fn set_github_pat(
-    State(state): State<AppState>,
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
     Json(payload): Json<SetPATRequest>,
 ) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "POST", "/api/github/pat", "set_pat");
+
     // Validate PAT by getting user info
     let client = GitHubClient::new(payload.github_pat.clone());
 
     let github_user = match client.get_user().await {
         Ok(user) => user,
         Err(e) => {
+            warn!("[{}] Invalid GitHub PAT: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "POST", "/api/github/pat", timer.elapsed_ms(), "400");
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -35,7 +45,9 @@ pub async fn set_github_pat(
     };
 
     // Save PAT to settings
-    if let Err(e) = state.db.set_github_pat(&payload.github_pat).await {
+    if let Err(e) = ctx.settings_repo.set("github_pat", &payload.github_pat).await {
+        warn!("[{}] Failed to save PAT: {}", trace_id, e);
+        ctx.logger.api_exit(&trace_id, "POST", "/api/github/pat", timer.elapsed_ms(), "500");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
@@ -44,6 +56,7 @@ pub async fn set_github_pat(
         );
     }
 
+    ctx.logger.api_exit(&trace_id, "POST", "/api/github/pat", timer.elapsed_ms(), "200");
     (
         StatusCode::OK,
         Json(serde_json::json!({
@@ -54,40 +67,68 @@ pub async fn set_github_pat(
 }
 
 /// Get current GitHub PAT status
-pub async fn get_github_pat_status(State(state): State<AppState>) -> impl IntoResponse {
-    match state.db.get_github_pat().await {
+pub async fn get_github_pat_status(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "GET", "/api/github/pat", "");
+
+    match ctx.settings_repo.get("github_pat").await {
         Ok(Some(pat)) => {
             // Validate PAT
             let client = GitHubClient::new(pat);
             match client.get_user().await {
-                Ok(user) => (
-                    StatusCode::OK,
-                    Json(serde_json::json!({
-                        "configured": true,
-                        "github_username": user.login
-                    })),
-                ),
-                Err(_) => (
-                    StatusCode::OK,
-                    Json(serde_json::json!({
-                        "configured": false,
-                        "error": "PAT is invalid or expired"
-                    })),
-                ),
+                Ok(user) => {
+                    ctx.logger.api_exit(&trace_id, "GET", "/api/github/pat", timer.elapsed_ms(), "200");
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "configured": true,
+                            "github_username": user.login
+                        })),
+                    )
+                }
+                Err(e) => {
+                    warn!("[{}] PAT validation failed: {}", trace_id, e);
+                    ctx.logger.api_exit(&trace_id, "GET", "/api/github/pat", timer.elapsed_ms(), "200");
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "configured": false,
+                            "error": "PAT is invalid or expired"
+                        })),
+                    )
+                }
             }
         }
-        _ => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "configured": false
-            })),
-        ),
+        _ => {
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/pat", timer.elapsed_ms(), "200");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "configured": false
+                })),
+            )
+        }
     }
 }
 
 /// Delete GitHub PAT (sign out)
-pub async fn delete_github_pat(State(state): State<AppState>) -> impl IntoResponse {
-    if let Err(e) = state.db.delete_github_pat().await {
+pub async fn delete_github_pat(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "DELETE", "/api/github/pat", "");
+
+    if let Err(e) = ctx.settings_repo.delete("github_pat").await {
+        warn!("[{}] Failed to delete PAT: {}", trace_id, e);
+        ctx.logger.api_exit(&trace_id, "DELETE", "/api/github/pat", timer.elapsed_ms(), "500");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
@@ -96,6 +137,7 @@ pub async fn delete_github_pat(State(state): State<AppState>) -> impl IntoRespon
         );
     }
 
+    ctx.logger.api_exit(&trace_id, "DELETE", "/api/github/pat", timer.elapsed_ms(), "200");
     (
         StatusCode::OK,
         Json(serde_json::json!({
@@ -106,10 +148,20 @@ pub async fn delete_github_pat(State(state): State<AppState>) -> impl IntoRespon
 }
 
 /// List user's GitHub repositories
-pub async fn list_repositories(State(state): State<AppState>) -> impl IntoResponse {
-    let pat = match state.db.get_github_pat().await {
+pub async fn list_repositories(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "GET", "/api/github/repositories", "");
+
+    let pat = match ctx.settings_repo.get("github_pat").await {
         Ok(Some(pat)) => pat,
         _ => {
+            warn!("[{}] No GitHub PAT configured", trace_id);
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/repositories", timer.elapsed_ms(), "400");
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -123,14 +175,21 @@ pub async fn list_repositories(State(state): State<AppState>) -> impl IntoRespon
     let client = GitHubClient::new(pat);
 
     match client.list_repositories().await {
-        Ok(repos) => (StatusCode::OK, Json(serde_json::json!({ "repositories": repos }))),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": format!("Failed to fetch repositories: {}", e),
-                "repositories": []
-            })),
-        ),
+        Ok(repos) => {
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/repositories", timer.elapsed_ms(), "200");
+            (StatusCode::OK, Json(serde_json::json!({ "repositories": repos })))
+        }
+        Err(e) => {
+            warn!("[{}] Failed to fetch repositories: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/repositories", timer.elapsed_ms(), "500");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to fetch repositories: {}", e),
+                    "repositories": []
+                })),
+            )
+        }
     }
 }
 
@@ -142,12 +201,20 @@ pub struct BranchesQuery {
 
 /// List repository branches
 pub async fn list_branches(
-    State(state): State<AppState>,
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
     Query(params): Query<BranchesQuery>,
 ) -> impl IntoResponse {
-    let pat = match state.db.get_github_pat().await {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "GET", "/api/github/branches", &format!("{}/{}", params.owner, params.repo));
+
+    let pat = match ctx.settings_repo.get("github_pat").await {
         Ok(Some(pat)) => pat,
         _ => {
+            warn!("[{}] No GitHub PAT configured", trace_id);
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/branches", timer.elapsed_ms(), "400");
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -161,14 +228,21 @@ pub async fn list_branches(
     let client = GitHubClient::new(pat);
 
     match client.list_branches(&params.owner, &params.repo).await {
-        Ok(branches) => (StatusCode::OK, Json(serde_json::json!({ "branches": branches }))),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": format!("Failed to fetch branches: {}", e),
-                "branches": []
-            })),
-        ),
+        Ok(branches) => {
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/branches", timer.elapsed_ms(), "200");
+            (StatusCode::OK, Json(serde_json::json!({ "branches": branches })))
+        }
+        Err(e) => {
+            warn!("[{}] Failed to fetch branches: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/branches", timer.elapsed_ms(), "500");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to fetch branches: {}", e),
+                    "branches": []
+                })),
+            )
+        }
     }
 }
 
@@ -181,12 +255,20 @@ pub struct FoldersQuery {
 
 /// List repository folders
 pub async fn list_folders(
-    State(state): State<AppState>,
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
     Query(params): Query<FoldersQuery>,
 ) -> impl IntoResponse {
-    let pat = match state.db.get_github_pat().await {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "GET", "/api/github/folders", &format!("{}/{}/{}", params.owner, params.repo, params.sha));
+
+    let pat = match ctx.settings_repo.get("github_pat").await {
         Ok(Some(pat)) => pat,
         _ => {
+            warn!("[{}] No GitHub PAT configured", trace_id);
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/folders", timer.elapsed_ms(), "400");
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -209,15 +291,20 @@ pub async fn list_folders(
                 .map(|item| item.path.clone())
                 .collect();
 
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/folders", timer.elapsed_ms(), "200");
             (StatusCode::OK, Json(serde_json::json!({ "folders": folders })))
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": format!("Failed to fetch folders: {}", e),
-                "folders": []
-            })),
-        ),
+        Err(e) => {
+            warn!("[{}] Failed to fetch folders: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/folders", timer.elapsed_ms(), "500");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to fetch folders: {}", e),
+                    "folders": []
+                })),
+            )
+        }
     }
 }
 
@@ -232,12 +319,20 @@ pub struct DetectProjectQuery {
 
 /// Detect project type and generate configuration
 pub async fn detect_project(
-    State(state): State<AppState>,
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
     Query(params): Query<DetectProjectQuery>,
 ) -> impl IntoResponse {
-    let pat = match state.db.get_github_pat().await {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "GET", "/api/github/detect", &format!("{}/{}/{}", params.owner, params.repo, params.branch));
+
+    let pat = match ctx.settings_repo.get("github_pat").await {
         Ok(Some(pat)) => pat,
         _ => {
+            warn!("[{}] No GitHub PAT configured", trace_id);
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/detect", timer.elapsed_ms(), "400");
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -260,12 +355,19 @@ pub async fn detect_project(
         )
         .await
     {
-        Ok(config) => (StatusCode::OK, Json(serde_json::json!(config))),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": e
-            })),
-        ),
+        Ok(config) => {
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/detect", timer.elapsed_ms(), "200");
+            (StatusCode::OK, Json(serde_json::json!(config)))
+        }
+        Err(e) => {
+            warn!("[{}] Failed to detect project: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/detect", timer.elapsed_ms(), "500");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": e
+                })),
+            )
+        }
     }
 }

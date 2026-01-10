@@ -49,22 +49,45 @@ project1.albl.cloud
 
 ## 모듈 구조
 
-### Agent 컨테이너 (Rust)
+### Agent 컨테이너 (Rust) - Phase 5-6 완료 (DDD 아키텍처)
 
 ```
 agent/
 ├── src/
 │   ├── main.rs              # 애플리케이션 진입점
-│   ├── state.rs             # 공유 상태 관리
-│   ├── api/                 # REST API 엔드포인트
-│   │   ├── projects.rs      # 프로젝트 CRUD
-│   │   ├── builds.rs        # 빌드 관리
-│   │   ├── github_api.rs    # GitHub 연동
-│   │   └── ws.rs            # WebSocket (실시간 로그)
-│   ├── build/               # 빌드 시스템
-│   │   ├── worker.rs        # 빌드 큐 워커
-│   │   ├── executor.rs      # Docker 빌드 실행
-│   │   └── deployer.rs      # 런타임 배포
+│   ├── state/               # 상태 관리 (Phase 5-6)
+│   │   ├── mod.rs           # State 모듈 export
+│   │   └── app_context.rs   # DI Container (NEW)
+│   ├── application/         # Application Layer (Phase 2)
+│   │   ├── ports/           # 인터페이스 정의
+│   │   │   └── repositories.rs  # Repository Traits
+│   │   └── services/        # 비즈니스 로직
+│   │       ├── build_service.rs      # 빌드 오케스트레이션
+│   │       ├── deployment_service.rs # 배포 관리
+│   │       └── project_service.rs    # 프로젝트 관리
+│   ├── infrastructure/      # Infrastructure Layer (Phase 3)
+│   │   ├── database/        # 데이터 영속성
+│   │   │   └── sqlite_repo.rs   # Repository 구현체
+│   │   ├── events/          # 이벤트 버스
+│   │   │   └── broadcast_bus.rs
+│   │   └── logging/         # 통합 로깅 (Phase 1)
+│   │       ├── boundary_logger.rs  # API 경계 로깅
+│   │       ├── trace_context.rs    # Trace ID 관리
+│   │       └── middleware.rs       # TraceId 미들웨어
+│   ├── api/                 # API Layer (Phase 5-6 완료)
+│   │   ├── mod.rs           # Router 조합
+│   │   ├── projects.rs      # 프로젝트 CRUD (8 handlers)
+│   │   ├── builds.rs        # 빌드 관리 (5 handlers)
+│   │   ├── settings.rs      # 설정 관리 (3 handlers)
+│   │   ├── webhook.rs       # GitHub Webhook (1 handler)
+│   │   ├── github_api.rs    # GitHub 연동 (7 handlers)
+│   │   ├── ws.rs            # WebSocket (실시간 로그)
+│   │   └── middleware.rs    # TraceId 레이어
+│   ├── build/               # 빌드 시스템 (Phase 5-6 완료)
+│   │   ├── mod.rs           # 모듈 export
+│   │   ├── worker.rs        # 빌드 큐 워커 (서비스 기반)
+│   │   ├── executor.rs      # DEPRECATED - BuildService로 대체
+│   │   └── deployer.rs      # DEPRECATED - DeploymentService로 대체
 │   ├── docker/              # Docker 클라이언트
 │   │   └── client.rs        # bollard 래퍼
 │   ├── github/              # GitHub Actions 처리
@@ -73,15 +96,31 @@ agent/
 │   │   ├── workflow_interpreter.rs # 의도 해석
 │   │   ├── config_builder.rs       # 설정 생성
 │   │   └── detector.rs      # 프로젝트 감지 총괄
-│   ├── proxy/               # 리버스 프록시
-│   │   └── router.rs        # HTTP 라우팅
+│   ├── proxy/               # 리버스 프록시 (Phase 5-6 완료)
+│   │   └── router.rs        # HTTP 라우팅 (AppContext 기반)
+│   ├── ws_broadcaster.rs    # WebSocket 브로드캐스터 (Phase 5-6 완료)
 │   └── db/                  # 데이터베이스
-│       ├── models.rs        # 데이터 모델
-│       └── queries.rs       # SQL 쿼리
+│       └── models.rs        # 데이터 모델
 └── migrations/              # DB 마이그레이션
     ├── 001_initial.sql
     └── 002_settings.sql
 ```
+
+### 레이어별 책임 (DDD 아키텍처)
+
+#### Application Layer
+- **Services**: 비즈니스 로직 오케스트레이션 (BuildService, DeploymentService, ProjectService)
+- **Ports**: Repository 인터페이스 정의 (Trait)
+
+#### Infrastructure Layer
+- **Repositories**: 데이터 영속성 구현 (SqliteProjectRepository, SqliteBuildRepository, SqliteSettingsRepository)
+- **Events**: 이벤트 발행/구독 (BroadcastEventBus)
+- **Logging**: 경계 로깅 및 Trace ID 관리
+
+#### API Layer
+- REST API 엔드포인트 (31개 핸들러)
+- AppContext 의존성 주입
+- TraceContext + Timer 통합 로깅
 
 ## 워크플로우 파싱 시스템
 

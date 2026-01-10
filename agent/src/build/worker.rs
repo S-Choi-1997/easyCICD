@@ -1,56 +1,45 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info};
+use uuid::Uuid;
 
-use crate::build::{BuildExecutor, Deployer};
-use crate::docker::DockerClient;
-use crate::state::AppState;
+use crate::state::AppContext;
 
-pub async fn run_build_worker(state: AppState) -> Result<()> {
+pub async fn run_build_worker(context: AppContext) -> Result<()> {
     info!("Build worker started");
-
-    let docker = DockerClient::new_with_host_path_detection().await?;
-    let executor = BuildExecutor::new(state.clone(), docker.clone());
-    let deployer = Deployer::new(state.clone(), docker);
 
     loop {
         // Get all queued builds
-        let queued_builds = state.build_queue.get_all_queued_builds().await;
+        let queued_builds = context.build_queue.get_all_queued_builds().await;
 
         for (project_id, _build_ids) in queued_builds {
             // Skip if already processing this project
-            if state.build_queue.is_processing(project_id).await {
+            if context.build_queue.is_processing(project_id).await {
                 continue;
             }
 
             // Dequeue next build for this project
-            if let Some(build_id) = state.build_queue.dequeue(project_id).await {
+            if let Some(build_id) = context.build_queue.dequeue(project_id).await {
                 info!("Processing build #{} for project {}", build_id, project_id);
 
                 // Mark as processing
-                state.build_queue.start_processing(project_id, build_id).await;
+                context.build_queue.start_processing(project_id, build_id).await;
 
                 // Spawn task to handle build
-                let state_clone = state.clone();
-                let executor_clone = executor.clone();
-                let deployer_clone = deployer.clone();
+                let ctx = context.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = process_build(
-                        state_clone.clone(),
-                        executor_clone,
-                        deployer_clone,
-                        project_id,
-                        build_id,
-                    )
-                    .await
+                    // Generate trace ID for this build process
+                    let trace_id = format!("worker-{}-{}", project_id, Uuid::new_v4());
+
+                    if let Err(e) = process_build(ctx.clone(), &trace_id, project_id, build_id).await
                     {
-                        error!("Build #{} failed: {}", build_id, e);
+                        error!("[{}] Build #{} failed: {}", trace_id, build_id, e);
                     }
 
                     // Mark as finished
-                    state_clone.build_queue.finish_processing(project_id).await;
+                    ctx.build_queue.finish_processing(project_id).await;
                 });
             }
         }
@@ -61,58 +50,49 @@ pub async fn run_build_worker(state: AppState) -> Result<()> {
 }
 
 async fn process_build(
-    state: AppState,
-    executor: BuildExecutor,
-    deployer: Deployer,
+    ctx: AppContext,
+    trace_id: &str,
     project_id: i64,
     build_id: i64,
 ) -> Result<()> {
     // Fetch project and build from database
-    let project = state
-        .db
-        .get_project(project_id)
+    let project = ctx
+        .project_repo
+        .get(project_id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Project not found: {}", project_id))?;
+        .context(format!("Project not found: {}", project_id))?;
 
-    let build = state
-        .db
-        .get_build(build_id)
+    let build = ctx
+        .build_repo
+        .get(build_id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Build not found: {}", build_id))?;
+        .context(format!("Build not found: {}", build_id))?;
 
     info!(
-        "Starting build #{} for project '{}'",
-        build.build_number, project.name
+        "[{}] Starting build #{} for project '{}'",
+        trace_id, build.build_number, project.name
     );
 
-    // Execute build
-    let output_path = executor.execute_build(&project, &build).await?;
-
-    // Deploy
-    deployer.deploy(&project, &build, output_path).await?;
+    // Execute build using BuildService
+    let output_path = ctx
+        .build_service
+        .execute_build(trace_id, build_id)
+        .await?;
 
     info!(
-        "Build #{} for project '{}' completed successfully",
-        build.build_number, project.name
+        "[{}] Build completed, starting deployment for project '{}'",
+        trace_id, project.name
+    );
+
+    // Deploy using DeploymentService
+    ctx.deployment_service
+        .deploy(trace_id, &project, &build, output_path)
+        .await?;
+
+    info!(
+        "[{}] Build #{} for project '{}' completed successfully",
+        trace_id, build.build_number, project.name
     );
 
     Ok(())
-}
-
-impl Clone for BuildExecutor {
-    fn clone(&self) -> Self {
-        Self {
-            state: self.state.clone(),
-            docker: self.docker.clone(),
-        }
-    }
-}
-
-impl Clone for Deployer {
-    fn clone(&self) -> Self {
-        Self {
-            state: self.state.clone(),
-            docker: self.docker.clone(),
-        }
-    }
 }

@@ -11,9 +11,9 @@ use tokio::net::TcpListener;
 use tracing::{info, warn};
 
 use crate::db::models::Slot;
-use crate::state::AppState;
+use crate::state::AppContext;
 
-pub async fn run_reverse_proxy(state: AppState) -> Result<()> {
+pub async fn run_reverse_proxy(context: AppContext) -> Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     let listener = TcpListener::bind(addr).await?;
 
@@ -22,15 +22,15 @@ pub async fn run_reverse_proxy(state: AppState) -> Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
-        let state = state.clone();
+        let ctx = context.clone();
 
         tokio::spawn(async move {
             if let Err(err) = http1::Builder::new()
                 .serve_connection(
                     io,
                     service_fn(move |req| {
-                        let state = state.clone();
-                        async move { handle_request(req, state).await }
+                        let ctx = ctx.clone();
+                        async move { handle_request(req, ctx).await }
                     }),
                 )
                 .await
@@ -43,7 +43,7 @@ pub async fn run_reverse_proxy(state: AppState) -> Result<()> {
 
 async fn handle_request(
     mut req: Request<Incoming>,
-    state: AppState,
+    ctx: AppContext,
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
     let path = req.uri().path();
     let method = req.method().clone();
@@ -63,7 +63,7 @@ async fn handle_request(
             let hostname = host_str.split(':').next().unwrap_or(host_str);
 
             // Check if subdomain routing should be used
-            if let Some(ref base_domain) = state.base_domain {
+            if let Some(ref base_domain) = ctx.base_domain {
                 // Build the pattern to match: -app.{base_domain}
                 let app_suffix = format!("-app.{}", base_domain);
 
@@ -116,14 +116,22 @@ async fn handle_request(
     };
 
     // Get project from database
-    let project = match state.db.get_project_by_name(&project_name).await {
-        Ok(p) => p,
-        Err(e) => {
-            warn!("Failed to get project {}: {}", project_name, e);
+    let project = match ctx.project_repo.get_by_name(&project_name).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            warn!("Project not found: {}", project_name);
             return Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .header("Content-Type", "text/plain; charset=utf-8")
                 .body(Full::new(Bytes::from("Project not found")))
+                .unwrap());
+        }
+        Err(e) => {
+            warn!("Failed to get project {}: {}", project_name, e);
+            return Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header("Content-Type", "text/plain; charset=utf-8")
+                .body(Full::new(Bytes::from("Internal error")))
                 .unwrap());
         }
     };
@@ -149,9 +157,9 @@ async fn handle_request(
 
     // Preserve query string
     let target_uri = if let Some(query) = req.uri().query() {
-        format!("http://{}:{}{}?{}", state.gateway_ip, target_port, target_path, query)
+        format!("http://{}:{}{}?{}", ctx.gateway_ip, target_port, target_path, query)
     } else {
-        format!("http://{}:{}{}", state.gateway_ip, target_port, target_path)
+        format!("http://{}:{}{}", ctx.gateway_ip, target_port, target_path)
     };
 
     info!(

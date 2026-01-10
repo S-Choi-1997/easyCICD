@@ -64,7 +64,9 @@
       "Bash(netstat -tlnp:*)",
       "Bash(ss:*)",
       "Bash(tree:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(/root/.cargo/bin/cargo check:*)",
+      "Bash(~/.cargo/bin/cargo check)"
     ]
   }
 }

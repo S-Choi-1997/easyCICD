@@ -11,6 +11,9 @@ pub trait ProjectRepository: Send + Sync {
     /// Get a project by ID
     async fn get(&self, id: i64) -> Result<Option<Project>>;
 
+    /// Get a project by name
+    async fn get_by_name(&self, name: &str) -> Result<Option<Project>>;
+
     /// List all projects
     async fn list(&self) -> Result<Vec<Project>>;
 
@@ -41,6 +44,9 @@ pub trait BuildRepository: Send + Sync {
 
     /// List builds for a specific project
     async fn list_by_project(&self, project_id: i64, limit: i64) -> Result<Vec<Build>>;
+
+    /// List recent builds (all projects)
+    async fn list_recent(&self, limit: i64) -> Result<Vec<Build>>;
 
     /// Update build status
     async fn update_status(&self, id: i64, status: BuildStatus) -> Result<()>;

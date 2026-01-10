@@ -13,9 +13,9 @@ pub use ws::ws_handler;
 pub use middleware::TraceIdLayer;
 
 use axum::{routing::{get, post, delete}, Router};
-use crate::state::AppState;
+use crate::state::AppContext;
 
-pub fn api_routes() -> Router<AppState> {
+pub fn api_routes() -> Router<AppContext> {
     Router::new()
         .nest("/projects", projects_routes())
         .nest("/builds", builds_routes())

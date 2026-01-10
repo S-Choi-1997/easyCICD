@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::state::{AppState, WsSubscription};
+use crate::state::{AppContext, WsSubscription};
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
@@ -20,19 +20,19 @@ enum ClientMessage {
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
-    State(state): State<AppState>,
+    State(ctx): State<AppContext>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    ws.on_upgrade(move |socket| handle_socket(socket, ctx))
 }
 
-async fn handle_socket(socket: WebSocket, state: AppState) {
+async fn handle_socket(socket: WebSocket, ctx: AppContext) {
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
     info!("WebSocket client connected");
 
     // Subscribe to global events by default
-    state.ws_connections.subscribe(WsSubscription::Global, tx.clone()).await;
+    ctx.ws_connections.subscribe(WsSubscription::Global, tx.clone()).await;
 
     // Task to receive messages from the channel and send to client
     let mut send_task = tokio::spawn(async move {
@@ -49,11 +49,11 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
     // Task to receive messages from client
     let tx_clone = tx.clone();
-    let state_clone = state.clone();
+    let ctx_clone = ctx.clone();
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
             if let axum::extract::ws::Message::Text(text) = msg {
-                if let Err(e) = handle_client_message(&text, &state_clone, &tx_clone).await {
+                if let Err(e) = handle_client_message(&text, &ctx_clone, &tx_clone).await {
                     warn!("Error handling client message: {}", e);
                 }
             }
@@ -75,7 +75,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
 async fn handle_client_message(
     text: &str,
-    state: &AppState,
+    ctx: &AppContext,
     tx: &mpsc::UnboundedSender<String>,
 ) -> Result<(), String> {
     let msg: ClientMessage = serde_json::from_str(text)
@@ -96,7 +96,7 @@ async fn handle_client_message(
                 _ => return Err(format!("Unknown target: {}", target)),
             };
 
-            state.ws_connections.subscribe(subscription, tx.clone()).await;
+            ctx.ws_connections.subscribe(subscription, tx.clone()).await;
             info!("Client subscribed to: {:?}", target);
         }
         ClientMessage::Unsubscribe { target, id } => {

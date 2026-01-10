@@ -16,8 +16,8 @@ use tower_http::services::ServeDir;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use db::Database;
-use state::AppState;
+use sqlx::SqlitePool;
+use state::AppContext;
 use build::run_build_worker;
 use api::{api_routes, github_webhook, ws_handler};
 use proxy::run_reverse_proxy;
@@ -44,20 +44,29 @@ async fn main() -> Result<()> {
     // Initialize database
     let database_url = "sqlite:///data/easycicd/db.sqlite";
     info!("Connecting to database: {}", database_url);
-    let db = Database::connect(database_url).await?;
+    let pool = SqlitePool::connect(database_url).await?;
 
     info!("Running database migrations");
-    db.migrate().await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
 
     // Initialize webhook secret (generate if not exists)
-    if let Ok(None) = db.get_setting("webhook_secret").await {
+    let webhook_secret: Option<String> = sqlx::query_scalar(
+        "SELECT value FROM settings WHERE key = 'webhook_secret'"
+    )
+    .fetch_optional(&pool)
+    .await?;
+
+    if webhook_secret.is_none() {
         use rand::Rng;
         let secret: String = rand::thread_rng()
             .sample_iter(&rand::distributions::Alphanumeric)
             .take(64)
             .map(char::from)
             .collect();
-        db.set_setting("webhook_secret", &secret).await?;
+        sqlx::query("INSERT INTO settings (key, value) VALUES ('webhook_secret', ?)")
+            .bind(&secret)
+            .execute(&pool)
+            .await?;
         info!("Generated new webhook secret (check database or API)");
     }
 
@@ -66,21 +75,23 @@ async fn main() -> Result<()> {
     let gateway_ip = docker.gateway_ip().to_string();
 
     // Load base domain from database (defaults to albl.cloud)
-    let base_domain = db.get_domain().await
-        .ok()
-        .flatten()
-        .or_else(|| Some("albl.cloud".to_string()));
+    let base_domain: Option<String> = sqlx::query_scalar(
+        "SELECT value FROM settings WHERE key = 'base_domain'"
+    )
+    .fetch_optional(&pool)
+    .await?
+    .or_else(|| Some("albl.cloud".to_string()));
 
     info!("Base domain: {:?}", base_domain);
 
-    // Create application state
-    let state = AppState::new(db, gateway_ip, base_domain);
+    // Create application context (replaces AppState)
+    let context = AppContext::new(pool.clone(), docker.clone(), gateway_ip, base_domain).await?;
 
-    info!("Application state initialized");
+    info!("Application context initialized");
 
     // Synchronize container states with database on startup
     info!("Synchronizing container states...");
-    synchronize_container_states(&state, &docker).await?;
+    synchronize_container_states(&context, &docker).await?;
     info!("Container state synchronization complete");
 
     // Build API server routes
@@ -90,11 +101,11 @@ async fn main() -> Result<()> {
         .nest("/api", api_routes())
         // Serve static files from /app/frontend directory
         .fallback_service(ServeDir::new("frontend"))
-        .with_state(state.clone());
+        .with_state(context.clone());
 
     // Start API server (port 3000)
     let api_server = tokio::spawn({
-        let state = state.clone();
+        let context = context.clone();
         async move {
             let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
                 .await
@@ -108,9 +119,9 @@ async fn main() -> Result<()> {
 
     // Start reverse proxy (port 8080)
     let reverse_proxy = tokio::spawn({
-        let state = state.clone();
+        let context = context.clone();
         async move {
-            if let Err(e) = run_reverse_proxy(state).await {
+            if let Err(e) = run_reverse_proxy(context).await {
                 tracing::error!("Reverse proxy error: {}", e);
             }
         }
@@ -118,9 +129,9 @@ async fn main() -> Result<()> {
 
     // Start build queue worker
     let build_worker = tokio::spawn({
-        let state = state.clone();
+        let context = context.clone();
         async move {
-            if let Err(e) = run_build_worker(state).await {
+            if let Err(e) = run_build_worker(context).await {
                 tracing::error!("Build worker error: {}", e);
             }
         }
@@ -128,9 +139,9 @@ async fn main() -> Result<()> {
 
     // Start WebSocket broadcaster
     let ws_broadcaster = tokio::spawn({
-        let state = state.clone();
+        let context = context.clone();
         async move {
-            if let Err(e) = run_ws_broadcaster(state).await {
+            if let Err(e) = run_ws_broadcaster(context).await {
                 tracing::error!("WebSocket broadcaster error: {}", e);
             }
         }
@@ -165,8 +176,8 @@ async fn main() -> Result<()> {
 /// Synchronize container states with database on startup
 /// 1. Removes container IDs from DB if containers don't exist
 /// 2. Removes orphan containers (containers without matching projects in DB)
-async fn synchronize_container_states(state: &AppState, docker: &DockerClient) -> Result<()> {
-    let projects = state.db.list_projects().await?;
+async fn synchronize_container_states(context: &AppContext, docker: &DockerClient) -> Result<()> {
+    let projects = context.project_repo.list().await?;
 
     // Step 1: Check DB projects and clean up dead containers from DB
     for project in &projects {
@@ -194,8 +205,12 @@ async fn synchronize_container_states(state: &AppState, docker: &DockerClient) -
 
         // Update database if needed
         if needs_update {
-            state.db.update_project_blue_container(project.id, new_blue_id).await?;
-            state.db.update_project_green_container(project.id, new_green_id).await?;
+            if new_blue_id != project.blue_container_id {
+                context.project_repo.update_blue_container(project.id, new_blue_id).await?;
+            }
+            if new_green_id != project.green_container_id {
+                context.project_repo.update_green_container(project.id, new_green_id).await?;
+            }
             info!("Project '{}': Container states synchronized", project.name);
         }
     }
