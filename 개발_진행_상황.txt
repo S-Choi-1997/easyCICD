@@ -483,13 +483,13 @@ Phase 3: Infrastructure 구현 ✅
 | ⏭️ MockDockerClient | infrastructure/docker/mock_client.rs | 테스트용 Mock 구현 (나중에) |
 | ✅ BroadcastEventBus | application/events/broadcast_event_bus.rs | EventBus 구현 (기존 broadcast 활용, 테스트 포함) |
 
-Phase 4: Application Services
+Phase 4: Application Services ✅
 ----------------------------------
 | 작업 | 파일 | 내용 |
 |------|------|------|
-| ☐ BuildService | application/services/build_service.rs | build/executor.rs 로직 이동 + 로깅 |
-| ☐ DeploymentService | application/services/deployment_service.rs | build/deployer.rs 로직 이동 + 로깅 |
-| ☐ ProjectService | application/services/project_service.rs | api/projects.rs 비즈니스 로직 분리 + 로깅 |
+| ✅ BuildService | application/services/build_service.rs | build/executor.rs 로직 이동 + 로깅 (294줄) |
+| ✅ DeploymentService | application/services/deployment_service.rs | build/deployer.rs 로직 이동 + 로깅 (372줄) |
+| ✅ ProjectService | application/services/project_service.rs | api/projects.rs 비즈니스 로직 분리 + 로깅 (448줄) |
 
 Phase 5: API Layer 분리
 ----------------------------------
