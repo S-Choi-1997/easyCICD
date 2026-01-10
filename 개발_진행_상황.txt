@@ -472,16 +472,16 @@ Phase 2: 로깅 시스템 구축 ✅
 예: [abc-123] [API→Handler] POST /api/projects [ENTRY]
 예: [abc-123] [BuildService→Docker] run_build [←DONE] 22000ms
 
-Phase 3: Infrastructure 구현
+Phase 3: Infrastructure 구현 ✅
 ----------------------------------
 | 작업 | 파일 | 내용 |
 |------|------|------|
-| ☐ SqliteProjectRepo | infrastructure/database/sqlite_repo.rs | ProjectRepository 구현 (기존 queries.rs 로직 활용) |
-| ☐ SqliteBuildRepo | infrastructure/database/sqlite_repo.rs | BuildRepository 구현 |
-| ☐ SqliteSettingsRepo | infrastructure/database/sqlite_repo.rs | SettingsRepository 구현 |
-| ☐ DockerClient 수정 | infrastructure/docker/client.rs | ContainerRuntime trait 구현 |
-| ☐ MockDockerClient | infrastructure/docker/mock_client.rs | 테스트용 Mock 구현 |
-| ☐ BroadcastEventBus | application/events/event_bus.rs | EventBus 구현 (기존 broadcast 활용) |
+| ✅ SqliteProjectRepo | infrastructure/database/sqlite_repo.rs | ProjectRepository 구현 (기존 queries.rs 로직 활용) |
+| ✅ SqliteBuildRepo | infrastructure/database/sqlite_repo.rs | BuildRepository 구현 |
+| ✅ SqliteSettingsRepo | infrastructure/database/sqlite_repo.rs | SettingsRepository 구현 |
+| ⏭️ DockerClient 수정 | infrastructure/docker/client.rs | ContainerRuntime trait 구현 (나중에) |
+| ⏭️ MockDockerClient | infrastructure/docker/mock_client.rs | 테스트용 Mock 구현 (나중에) |
+| ✅ BroadcastEventBus | application/events/broadcast_event_bus.rs | EventBus 구현 (기존 broadcast 활용, 테스트 포함) |
 
 Phase 4: Application Services
 ----------------------------------
