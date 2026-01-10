@@ -38,8 +38,11 @@ pub async fn run_build_worker(context: AppContext) -> Result<()> {
                         error!("[{}] Build #{} failed: {}", trace_id, build_id, e);
                     }
 
-                    // Mark as finished
+                    // Mark as finished and add small delay to prevent immediate re-processing
                     ctx.build_queue.finish_processing(project_id).await;
+
+                    // Small delay to ensure state consistency before next build
+                    sleep(Duration::from_millis(100)).await;
                 });
             }
         }

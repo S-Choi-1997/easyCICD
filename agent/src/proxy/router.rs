@@ -13,6 +13,21 @@ use tracing::{info, warn};
 use crate::db::models::Slot;
 use crate::state::AppContext;
 
+// Helper to create error responses safely
+fn error_response(status: StatusCode, message: &str) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    Response::builder()
+        .status(status)
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .body(Full::new(Bytes::from(message.to_string())))
+        .map_err(|e| {
+            warn!("Failed to build error response: {:?}", e);
+            hyper::Error::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Response build error: {:?}", e),
+            ))
+        })
+}
+
 pub async fn run_reverse_proxy(context: AppContext) -> Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     let listener = TcpListener::bind(addr).await?;
@@ -75,42 +90,28 @@ async fn handle_request(
                 } else {
                     // Fallback to path-based routing
                     if parts.is_empty() || parts[0].is_empty() {
-                        return Ok(Response::builder()
-                            .status(StatusCode::NOT_FOUND)
-                            .header("Content-Type", "text/plain; charset=utf-8")
-                            .body(Full::new(Bytes::from("Not found")))
-                            .unwrap());
+                        return error_response(StatusCode::NOT_FOUND, "Not found");
                     }
                     (parts[0].to_string(), false)
                 }
             } else {
                 // No base_domain set, use path-based routing
                 if parts.is_empty() || parts[0].is_empty() {
-                    return Ok(Response::builder()
-                        .status(StatusCode::NOT_FOUND)
-                        .body(Full::new(Bytes::from("Not found")))
-                        .unwrap());
+                    return error_response(StatusCode::NOT_FOUND, "Not found");
                 }
                 (parts[0].to_string(), false)
             }
         } else {
             // Cannot parse host header, fallback to path-based
             if parts.is_empty() || parts[0].is_empty() {
-                return Ok(Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .header("Content-Type", "text/plain; charset=utf-8")
-                    .body(Full::new(Bytes::from("Not found")))
-                    .unwrap());
+                return error_response(StatusCode::NOT_FOUND, "Not found");
             }
             (parts[0].to_string(), false)
         }
     } else {
         // No host header, fallback to path-based
         if parts.is_empty() || parts[0].is_empty() {
-            return Ok(Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Full::new(Bytes::from("Not found")))
-                .unwrap());
+            return error_response(StatusCode::NOT_FOUND, "Not found");
         }
         (parts[0].to_string(), false)
     };
@@ -120,19 +121,11 @@ async fn handle_request(
         Ok(Some(p)) => p,
         Ok(None) => {
             warn!("Project not found: {}", project_name);
-            return Ok(Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .header("Content-Type", "text/plain; charset=utf-8")
-                .body(Full::new(Bytes::from("Project not found")))
-                .unwrap());
+            return error_response(StatusCode::NOT_FOUND, "Project not found");
         }
         Err(e) => {
             warn!("Failed to get project {}: {}", project_name, e);
-            return Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .header("Content-Type", "text/plain; charset=utf-8")
-                .body(Full::new(Bytes::from("Internal error")))
-                .unwrap());
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error");
         }
     };
 
@@ -217,11 +210,7 @@ async fn handle_request(
         Ok(res) => res,
         Err(e) => {
             warn!("✗ Backend request failed: {}", e);
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_GATEWAY)
-                .header("Content-Type", "text/plain; charset=utf-8")
-                .body(Full::new(Bytes::from("Service unavailable")))
-                .unwrap());
+            return error_response(StatusCode::BAD_GATEWAY, "Service unavailable");
         }
     };
 
@@ -233,11 +222,7 @@ async fn handle_request(
         Ok(b) => b,
         Err(e) => {
             warn!("Failed to read response body: {}", e);
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_GATEWAY)
-                .header("Content-Type", "text/plain; charset=utf-8")
-                .body(Full::new(Bytes::from("Error reading response")))
-                .unwrap());
+            return error_response(StatusCode::BAD_GATEWAY, "Error reading response");
         }
     };
 
@@ -262,7 +247,13 @@ async fn handle_request(
     }
     info!("← Sending response to client: {} ({} headers)", status, header_count);
 
-    Ok(response_builder
+    response_builder
         .body(Full::new(body))
-        .unwrap())
+        .map_err(|e| {
+            warn!("Failed to build final response: {:?}", e);
+            hyper::Error::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Final response build error: {:?}", e),
+            ))
+        })
 }

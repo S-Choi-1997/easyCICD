@@ -648,3 +648,95 @@ pub struct BuildExecutor {
   - 명확한 레이어 분리 (API, Application, Infrastructure)
   - 관찰 가능성(Observability) 설계 필수 (로깅, 추적)
   - 문서는 코드에서 자동 생성
+
+================================================================================
+Phase 5-6 전환 후 발견된 문제 (2026-01-10)
+================================================================================
+
+❌ 문제 21: ws_broadcaster.rs 브로드캐스트 채널 에러 미처리
+--------------------------------------------------------------------------------
+원인: broadcast::Receiver::recv()는 Result를 반환하지만 Err 케이스를 처리하지 않음
+증상: 모든 이벤트 송신자가 드롭되면 WebSocket 브로드캐스팅이 조용히 중단됨
+위치: agent/src/ws_broadcaster.rs:14
+해결: match 패턴으로 Ok/Err 명시적 처리, Err 시 에러 로그 및 함수 종료
+
+수정 코드:
+```rust
+event_result = event_rx.recv() => {
+    match event_result {
+        Ok(event) => {
+            context.ws_connections.broadcast_event(&event).await;
+        }
+        Err(e) => {
+            error!("Event broadcast channel error: {:?}", e);
+            return Err(anyhow::anyhow!("Event channel closed: {:?}", e));
+        }
+    }
+}
+```
+
+❌ 문제 22: 프로젝트 워크스페이스 경로 불일치
+--------------------------------------------------------------------------------
+원인: API와 서비스에서 다른 경로 사용 (/workspace/projects vs /data/workspace)
+증상: Git 정보 수집 시 존재하지 않는 경로 탐색으로 빈 커밋 해시 반환
+위치:
+  - agent/src/api/projects.rs:163
+  - agent/src/application/services/project_service.rs:112
+
+해결: 모든 위치에서 `/data/workspace/{project_name}` 통일
+  - `/workspace/projects/{name}` → `/data/workspace/{name}`
+
+❌ 문제 23: build/worker.rs 순차 처리 Race Condition
+--------------------------------------------------------------------------------
+원인: finish_processing() 직후 즉시 다음 빌드가 시작될 수 있음
+증상: 동일 프로젝트의 순차 처리 보장이 미세하게 깨질 수 있음
+위치: agent/src/build/worker.rs:42
+
+해결: finish_processing() 후 100ms 딜레이 추가
+```rust
+ctx.build_queue.finish_processing(project_id).await;
+sleep(Duration::from_millis(100)).await;
+```
+
+❌ 문제 24: proxy/router.rs Response 생성 unwrap() 남용
+--------------------------------------------------------------------------------
+원인: Response::builder().body().unwrap() 호출이 10곳에서 발생
+증상: Body 구성 실패 시 panic 발생 가능, 프록시 전체 크래시 위험
+위치: agent/src/proxy/router.rs (라인 82, 92, 103, 113, 127, 135, 196, 224, 240, 267)
+
+해결:
+  1. error_response() 헬퍼 함수 추가
+     - StatusCode와 message를 받아 안전하게 Response 생성
+     - 실패 시 적절한 hyper::Error 반환
+
+  2. 모든 unwrap()을 다음으로 교체:
+     - error_response() 헬퍼 사용 (9곳)
+     - map_err() 체이닝 (1곳, 최종 response 빌더)
+
+수정 예시:
+```rust
+// Before:
+return Ok(Response::builder()
+    .status(StatusCode::NOT_FOUND)
+    .header("Content-Type", "text/plain; charset=utf-8")
+    .body(Full::new(Bytes::from("Not found")))
+    .unwrap());
+
+// After:
+return error_response(StatusCode::NOT_FOUND, "Not found");
+```
+
+✅ 핵심 교훈 (Phase 5-6)
+--------------------------------------------------------------------------------
+1. **채널 에러 처리**: 모든 Result는 명시적 처리, 특히 채널/스트림 종료 케이스
+2. **경로 일관성**: 하드코딩된 경로는 상수화하여 전체 일관성 보장
+3. **동시성 제어**: 상태 전환 후 작은 딜레이로 race condition 방지
+4. **Panic 방지**: unwrap() 대신 적절한 에러 처리 (특히 프록시 같은 핵심 경로)
+5. **에러 전파**: HTTP 경계에서 적절한 에러 응답 생성
+
+✅ 권장 개선 사항
+--------------------------------------------------------------------------------
+- 프로젝트 경로를 환경 변수 또는 config 파일로 중앙 관리
+- BuildQueue에 명시적 동기화 메커니즘 추가 고려
+- Response 빌더 패턴에 타입 안전성 래퍼 추가
+- 모든 핵심 경로에서 unwrap() 사용 금지 (컴파일러 경고 추가 고려)

@@ -160,8 +160,7 @@ async fn trigger_build(
     };
 
     // Get current commit hash from workspace
-    let workspace_path = PathBuf::from("/workspace")
-        .join("projects")
+    let workspace_path = PathBuf::from("/data/workspace")
         .join(&project.name);
 
     let commit_hash = if workspace_path.exists() {

@@ -109,8 +109,7 @@ where
         self.logger.repo_done(trace_id, "ProjectService", "ProjectRepo", "get", repo_timer.elapsed_ms());
 
         // Get current commit hash from workspace
-        let workspace_path = PathBuf::from("/workspace")
-            .join("projects")
+        let workspace_path = PathBuf::from("/data/workspace")
             .join(&project.name);
 
         self.logger.external_call(trace_id, "ProjectService", "Git", "rev-parse");
