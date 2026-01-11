@@ -97,6 +97,8 @@ docker compose up -d
 
 ### 프로젝트
 - `GET /api/projects`, `POST /api/projects`, `GET /api/projects/:id`, `DELETE /api/projects/:id`
+- `POST /api/projects/:id/rollback/:build_id`: 이전 빌드로 롤백
+- `GET /api/projects/:id/runtime-logs`: 런타임 로그 스트리밍 (WebSocket)
 
 ### 빌드
 - `POST /api/projects/:id/builds`, `GET /api/builds/:id/logs` (WebSocket)
@@ -130,6 +132,10 @@ docker compose up -d
 - **SQLite**: 데이터베이스
 
 ## 변경 이력
+
+### v1.3.0 (2026-01-11)
+- 🔄 롤백 기능 추가 (이전 빌드로 복원)
+- 📜 런타임 로그 스트리밍 (실시간 컨테이너 로그)
 
 ### v1.2.0 (2026-01-11)
 - 🏗️ DDD 레이어드 아키텍처 완성
