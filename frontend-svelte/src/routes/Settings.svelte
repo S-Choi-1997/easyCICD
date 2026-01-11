@@ -77,23 +77,21 @@
       <div class="form-section">
         <h3>도메인 설정</h3>
         <p class="text-muted mb-2">
-          프로젝트 URL에 사용할 도메인을 설정합니다. 설정하지 않으면 IP 주소가 사용됩니다.
+          서브도메인 라우팅에 사용할 기본 도메인을 설정합니다.
         </p>
         <p class="text-muted mb-3">
-          예시:<br>
-          • <code>app.albl.cloud</code> → <code>http://app.albl.cloud:9999/프로젝트명/</code><br>
-          • <code>app.albl.cloud:9999</code> → <code>http://app.albl.cloud:9999/프로젝트명/</code><br>
-          • <code>app.albl.cloud:80</code> → <code>http://app.albl.cloud:80/프로젝트명/</code>
+          프로젝트별 서브도메인은 <code>{프로젝트명}-app.{기본도메인}</code> 형식으로 생성됩니다.<br>
+          예: <code>albl.cloud</code> 입력 시 → <code>myproject-app.albl.cloud</code>
         </p>
 
         <div class="form-group">
-          <label for="domain">도메인 (선택사항)</label>
+          <label for="domain">기본 도메인 (선택사항)</label>
           <input
             type="text"
             id="domain"
             class="form-input"
             bind:value={domain}
-            placeholder="app.example.com"
+            placeholder="albl.cloud"
           />
         </div>
 
@@ -272,29 +270,4 @@
     to { transform: rotate(360deg); }
   }
 
-  header {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    padding: 1.5rem 2rem;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  }
-
-  .header-content {
-    max-width: 1200px;
-    margin: 0 auto;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-
-  header h1 {
-    margin: 0;
-    font-size: 1.875rem;
-    font-weight: 700;
-  }
-
-  .header-actions {
-    display: flex;
-    gap: 0.75rem;
-  }
 </style>

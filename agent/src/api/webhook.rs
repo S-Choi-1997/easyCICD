@@ -13,6 +13,8 @@ use tracing::{info, warn};
 use crate::db::models::{BuildStatus, CreateBuild};
 use crate::events::Event;
 use crate::state::AppContext;
+use crate::application::ports::repositories::{ProjectRepository, BuildRepository, SettingsRepository};
+use crate::application::events::event_bus::EventBus;
 use crate::infrastructure::logging::{TraceContext, Timer};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -66,7 +68,7 @@ pub async fn github_webhook(
     // Verify signature
     if let Err(e) = verify_signature(&ctx, &headers, &body).await {
         warn!("[{}] Webhook signature verification failed: {}", trace_id, e);
-        ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "401");
+        ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), 401);
         return (
             StatusCode::UNAUTHORIZED,
             Json(WebhookResponse {
@@ -81,7 +83,7 @@ pub async fn github_webhook(
         Ok(w) => w,
         Err(e) => {
             warn!("[{}] Failed to parse webhook payload: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "400");
+            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), 400);
             return (
                 StatusCode::BAD_REQUEST,
                 Json(WebhookResponse {
@@ -102,11 +104,11 @@ pub async fn github_webhook(
         .unwrap_or("main");
 
     // Find matching project
-    let projects = match ctx.project_repo.list().await {
+    let projects: Vec<crate::db::models::Project> = match ctx.project_repo.list().await {
         Ok(p) => p,
         Err(e) => {
             warn!("[{}] Failed to list projects: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), 500);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(WebhookResponse {
@@ -128,7 +130,7 @@ pub async fn github_webhook(
                 "[{}] No matching project found for repo {} branch {}",
                 trace_id, webhook.repository.full_name, branch
             );
-            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "200");
+            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), 200);
             return (
                 StatusCode::OK,
                 Json(WebhookResponse {
@@ -144,7 +146,7 @@ pub async fn github_webhook(
         Some(c) => c,
         None => {
             info!("[{}] No head commit in webhook", trace_id);
-            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "200");
+            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), 200);
             return (
                 StatusCode::OK,
                 Json(WebhookResponse {
@@ -171,7 +173,7 @@ pub async fn github_webhook(
             "[{}] Changed files do not match path filter: {}",
             trace_id, project.path_filter
         );
-        ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "200");
+        ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), 200);
         return (
             StatusCode::OK,
             Json(WebhookResponse {
@@ -193,7 +195,7 @@ pub async fn github_webhook(
         Ok(b) => b,
         Err(e) => {
             warn!("[{}] Failed to create build: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), 500);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(WebhookResponse {
@@ -220,7 +222,7 @@ pub async fn github_webhook(
         timestamp: Event::now(),
     }).await;
 
-    ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "200");
+    ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), 200);
 
     (
         StatusCode::OK,
@@ -260,10 +262,10 @@ fn match_path_filter(pattern: &str, files: &[String]) -> bool {
 
 async fn verify_signature(ctx: &AppContext, headers: &HeaderMap, body: &str) -> Result<(), String> {
     // Get webhook secret from database
-    let secret = ctx.settings_repo.get("webhook_secret")
+    let secret_opt: Option<String> = ctx.settings_repo.get("webhook_secret")
         .await
-        .map_err(|e| format!("Failed to get webhook secret: {}", e))?
-        .ok_or("Webhook secret not configured")?;
+        .map_err(|e| format!("Failed to get webhook secret: {}", e))?;
+    let secret = secret_opt.ok_or("Webhook secret not configured")?;
 
     // Get signature from header
     let signature_header = headers

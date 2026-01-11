@@ -5,6 +5,7 @@
   import Setup from './routes/Setup.svelte';
   import BuildHistory from './routes/BuildHistory.svelte';
   import Settings from './routes/Settings.svelte';
+  import ContainerNew from './routes/ContainerNew.svelte';
   import { initWebSocket, subscribe } from './stores/websocket';
   import { updateProjectFromWebSocket } from './stores/projects';
   import { updateBuildFromWebSocket } from './stores/builds';
@@ -14,6 +15,7 @@
     '/setup': Setup,
     '/build/:id': BuildHistory,
     '/settings': Settings,
+    '/containers/new': ContainerNew,
   };
 
   onMount(() => {

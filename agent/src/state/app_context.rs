@@ -4,9 +4,10 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::application::events::{BroadcastEventBus, Event};
-use crate::application::services::{BuildService, DeploymentService, ProjectService};
+use crate::application::events::event_bus::EventBus;
+use crate::application::services::{BuildService, ContainerService, DeploymentService, ProjectService};
 use crate::docker::DockerClient;
-use crate::infrastructure::database::{SqliteBuildRepository, SqliteProjectRepository, SqliteSettingsRepository};
+use crate::infrastructure::database::{SqliteBuildRepository, SqliteContainerRepository, SqliteProjectRepository, SqliteSettingsRepository};
 use crate::infrastructure::logging::BoundaryLogger;
 use crate::state::{BuildQueue, WsConnections};
 
@@ -39,11 +40,17 @@ pub struct AppContext {
             BroadcastEventBus,
         >,
     >,
+    pub container_service: Arc<
+        ContainerService<
+            SqliteContainerRepository,
+        >,
+    >,
 
     // Repositories (Infrastructure Layer)
     pub project_repo: Arc<SqliteProjectRepository>,
     pub build_repo: Arc<SqliteBuildRepository>,
     pub settings_repo: Arc<SqliteSettingsRepository>,
+    pub container_repo: Arc<SqliteContainerRepository>,
 
     // Infrastructure
     pub event_bus: BroadcastEventBus,
@@ -69,13 +76,14 @@ impl AppContext {
         let project_repo = Arc::new(SqliteProjectRepository::new(pool.clone()));
         let build_repo = Arc::new(SqliteBuildRepository::new(pool.clone()));
         let settings_repo = Arc::new(SqliteSettingsRepository::new(pool.clone()));
+        let container_repo = Arc::new(SqliteContainerRepository::new(pool.clone()));
 
         // 2. Create Infrastructure components
         let logger = Arc::new(BoundaryLogger::new());
         let event_bus = BroadcastEventBus::new_default(logger.clone());
 
         // 3. Create Services with dependency injection
-        let project_service = Arc::new(ProjectService::new(
+        let project_service = Arc::new(ProjectService::<SqliteProjectRepository, SqliteBuildRepository, BroadcastEventBus>::new(
             project_repo.clone(),
             build_repo.clone(),
             event_bus.clone(),
@@ -83,7 +91,7 @@ impl AppContext {
             logger.clone(),
         ));
 
-        let build_service = Arc::new(BuildService::new(
+        let build_service = Arc::new(BuildService::<SqliteBuildRepository, SqliteProjectRepository, BroadcastEventBus>::new(
             build_repo.clone(),
             project_repo.clone(),
             event_bus.clone(),
@@ -91,10 +99,16 @@ impl AppContext {
             logger.clone(),
         ));
 
-        let deployment_service = Arc::new(DeploymentService::new(
+        let deployment_service = Arc::new(DeploymentService::<SqliteBuildRepository, SqliteProjectRepository, BroadcastEventBus>::new(
             build_repo.clone(),
             project_repo.clone(),
             event_bus.clone(),
+            docker.clone(),
+            logger.clone(),
+        ));
+
+        let container_service = Arc::new(ContainerService::<SqliteContainerRepository>::new(
+            container_repo.clone(),
             docker.clone(),
             logger.clone(),
         ));
@@ -103,9 +117,11 @@ impl AppContext {
             project_service,
             build_service,
             deployment_service,
+            container_service,
             project_repo,
             build_repo,
             settings_repo,
+            container_repo,
             event_bus,
             build_queue: Arc::new(BuildQueue::new()),
             ws_connections: Arc::new(WsConnections::new()),

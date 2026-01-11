@@ -740,3 +740,569 @@ return error_response(StatusCode::NOT_FOUND, "Not found");
 - BuildQueue에 명시적 동기화 메커니즘 추가 고려
 - Response 빌더 패턴에 타입 안전성 래퍼 추가
 - 모든 핵심 경로에서 unwrap() 사용 금지 (컴파일러 경고 추가 고려)
+
+❌ 문제 25: Rust Trait Scope 누락으로 인한 대규모 컴파일 에러
+--------------------------------------------------------------------------------
+날짜: 2026-01-10
+원인: Phase 5-6 마이그레이션 후 Trait 메서드를 사용하는 모든 파일에서 trait import 누락
+증상:
+  - ws_broadcaster.rs에서 `event_bus.subscribe()` 호출 실패
+  - 모든 API 파일에서 `project_repo.list()`, `.get()` 등 호출 실패
+  - 처음 4개 에러 → 119개로 폭발 → 점진적으로 해결하여 0개로 수렴
+
+핵심 문제:
+  Rust는 trait 메서드 사용 시 **반드시 trait이 scope에 있어야 함**
+  Arc<SqliteProjectRepository>가 ProjectRepository trait을 구현하더라도,
+  `use crate::application::ports::repositories::ProjectRepository;` 없이는
+  `.list()`, `.get()` 등의 메서드를 호출할 수 없음
+
+발생 위치:
+  1. ws_broadcaster.rs - EventBus trait
+  2. build/worker.rs - ProjectRepository, BuildRepository
+  3. api/webhook.rs - ProjectRepository, BuildRepository, SettingsRepository, EventBus
+  4. api/projects.rs - ProjectRepository, BuildRepository
+  5. api/builds.rs - BuildRepository, ProjectRepository
+  6. api/settings.rs - SettingsRepository
+  7. api/github_api.rs - SettingsRepository
+  8. proxy/router.rs - ProjectRepository
+  9. main.rs - ProjectRepository
+  10. state/app_context.rs - EventBus
+
+해결:
+각 파일에 필요한 trait import 추가
+```rust
+// 예시 1: ws_broadcaster.rs
+use crate::application::events::event_bus::EventBus;
+
+// 예시 2: api/webhook.rs
+use crate::application::ports::repositories::{ProjectRepository, BuildRepository, SettingsRepository};
+use crate::application::events::event_bus::EventBus;
+```
+
+❌ 문제 26: BoundaryLogger api_exit() status 파라미터 타입 불일치
+--------------------------------------------------------------------------------
+날짜: 2026-01-10
+원인: api_exit() 시그니처가 u16을 요구하는데 모든 API 핸들러에서 &str로 호출
+증상: 80+ 개의 type mismatch 에러 발생
+위치: webhook.rs, github_api.rs, projects.rs, builds.rs, settings.rs 전체
+
+에러 예시:
+```
+error[E0308]: mismatched types
+  --> src/api/webhook.rs:71:91
+   |
+71 |  ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "401");
+   |                                                                                 ^^^^^
+   |                                                                   expected `u16`, found `&str`
+```
+
+해결:
+sed를 사용한 일괄 치환
+```bash
+sed -i 's/api_exit(\(.*\), "\([0-9]\{3\}\)")/api_exit(\1, \2)/g' agent/src/api/*.rs
+```
+
+Before: `ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), "200");`
+After:  `ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), 200);`
+
+❌ 문제 27: 타입 추론 실패 - Option<T> 반환 시 명시적 타입 필요
+--------------------------------------------------------------------------------
+날짜: 2026-01-10
+원인: Repository trait의 제네릭 메서드 호출 시 타입 추론 불가
+증상: `cannot infer type` 컴파일 에러
+위치: build/worker.rs (2곳), api/webhook.rs (1곳)
+
+에러 예시:
+```
+error[E0282]: type annotations needed
+  --> src/build/worker.rs:62:47
+   |
+62 |   let project: crate::db::models::Project = ctx
+   |  _______________________________________________^
+63 | |         .project_repo
+64 | |         .get(project_id)
+65 | |         .await?
+   | |_______________^ cannot infer type
+```
+
+해결:
+제네릭 반환 타입을 명시적으로 지정
+```rust
+// Before (실패):
+let project: crate::db::models::Project = ctx
+    .project_repo
+    .get(project_id)
+    .await?
+    .context(format!("Project not found: {}", project_id))?;
+
+// After (성공):
+let project_opt: Option<crate::db::models::Project> = ctx
+    .project_repo
+    .get(project_id)
+    .await?;
+let project = project_opt.context(format!("Project not found: {}", project_id))?;
+```
+
+❌ 문제 28: 중복 모듈 선언 - state.rs와 state/mod.rs 충돌
+--------------------------------------------------------------------------------
+날짜: 2026-01-10
+원인: Phase 5에서 state.rs를 state/ 디렉토리로 분리했으나 state.rs 파일이 남아있음
+증상: `file for module 'state' found at both "src/state.rs" and "src/state/mod.rs"`
+위치: agent/src/
+
+해결: agent/src/state.rs 파일 삭제
+```bash
+rm agent/src/state.rs
+```
+
+Rust는 모듈을 `foo.rs` 또는 `foo/mod.rs` 둘 중 하나로만 선언 가능
+
+❌ 문제 29: hyper Body moved value 에러
+--------------------------------------------------------------------------------
+날짜: 2026-01-10
+원인: proxy/router.rs에서 body를 두 번 사용 (move 후 재사용)
+증상: `use of moved value: body`
+위치: agent/src/proxy/router.rs:257
+
+코드:
+```rust
+match response_builder.body(Full::new(body)) {  // body moved here
+    Ok(response) => Ok(response),
+    Err(e) => {
+        warn!("Failed to build final response: {:?}", e);
+        Ok(Response::new(Full::new(body)))  // ❌ body already moved!
+    }
+}
+```
+
+해결: clone 사용
+```rust
+match response_builder.body(Full::new(body.clone())) {  // body cloned
+    Ok(response) => Ok(response),
+    Err(e) => {
+        warn!("Failed to build final response: {:?}", e);
+        Ok(Response::new(Full::new(body)))  // ✅ original body used here
+    }
+}
+```
+
+❌ 문제 30: tracing macro import 누락
+--------------------------------------------------------------------------------
+날짜: 2026-01-10
+원인: main.rs에서 error! 매크로 사용했으나 import하지 않음
+증상: `cannot find macro 'error' in this scope`
+위치: agent/src/main.rs:116
+
+해결:
+```rust
+// Before:
+use tracing::info;
+
+// After:
+use tracing::{info, error};
+```
+
+✅ 핵심 교훈 (Phase 5-6 디플로이 과정)
+--------------------------------------------------------------------------------
+1. **Trait Scope 규칙**: Rust에서 trait 메서드 사용 시 반드시 trait을 명시적으로 import해야 함
+2. **타입 추론의 한계**: 제네릭 반환 타입은 명시적 annotation이 필요한 경우가 많음
+3. **일괄 수정의 효율성**: sed 같은 도구로 반복적 패턴을 빠르게 수정 가능
+4. **에러 체이닝**: 처음 작은 에러가 연쇄적으로 수백 개 에러를 유발할 수 있음 (trait scope 누락 → 119개 에러)
+5. **Move Semantics 주의**: Rust의 소유권 시스템에서 값을 두 번 사용할 때는 clone 필요
+6. **Macro도 Import**: info!, error!, warn! 같은 매크로도 명시적 import 필요
+
+✅ 디플로이 에러 해결 프로세스
+--------------------------------------------------------------------------------
+1단계: 에러 개수 파악 (52개 → 81개 → 119개 → 1개 → 0개)
+2단계: 공통 패턴 찾기 (trait import, type annotation, api_exit signature)
+3단계: 일괄 수정 가능한 것은 sed로 처리
+4단계: 개별 수정 필요한 것은 하나씩 처리
+5단계: 마지막 1-2개 에러는 grep으로 정확히 위치 파악 후 수정
+
+❌ 문제 31: sqlx::migrate! 매크로와 마이그레이션 파일 동기화 문제
+--------------------------------------------------------------------------------
+날짜: 2026-01-10
+원인: sqlx::migrate!() 매크로가 컴파일 타임에 마이그레이션을 바이너리에 임베드하는 동작 방식 미이해
+증상:
+  - 마이그레이션 파일 수정/삭제 후에도 컨테이너가 계속 재시작됨
+  - `duplicate column name` 에러 반복 발생
+  - DB 초기화를 10번 이상 반복해야 했음
+
+핵심 문제:
+  **sqlx::migrate!("./migrations")의 동작 방식**
+  1. 컴파일 타임에 `./migrations` 디렉토리를 읽음
+  2. 모든 .sql 파일을 **바이너리에 임베드**
+  3. 런타임에는 임베드된 데이터를 사용 (파일시스템 안 봄)
+
+발생 시나리오:
+  1. 003_deploy_logs.sql 작성 → 빌드 → 배포 → DB에 적용됨
+  2. 로컬에서 003_deploy_logs.sql 삭제
+  3. 다시 배포 시도
+  4. **Docker 이미지는 여전히 이전 빌드** (003 포함)
+  5. 컨테이너 실행 → 임베드된 003 실행 시도
+  6. DB에는 이미 deploy_log_path 컬럼 존재
+  7. → `duplicate column name` 에러!
+
+위치:
+  - agent/src/main.rs:51 - sqlx::migrate!("./migrations").run(&pool)
+  - agent/Dockerfile:23 - COPY agent/migrations ./migrations
+  - agent/Dockerfile:44 - COPY --from=builder /build/migrations /app/migrations
+
+추가 문제:
+  **SQLite의 한계**
+  - `ALTER TABLE ADD COLUMN IF NOT EXISTS` 구문 미지원
+  - PostgreSQL/MySQL과 달리 조건부 DDL 불가능
+
+해결:
+  1. 마이그레이션 파일 수정/삭제 후 **반드시 재빌드**
+     ```bash
+     ./deploy.sh  # 새로운 바이너리에 최신 마이그레이션 임베드
+     ```
+
+  2. 마이그레이션 충돌 발생 시 DB 초기화
+     ```bash
+     docker-compose down
+     sudo rm -rf /data/easycicd/db.sqlite*
+     docker-compose up -d
+     ```
+
+  3. **마이그레이션 파일 관리 원칙**
+     - 기존 마이그레이션 파일은 **절대 수정 금지**
+     - 변경이 필요하면 새 마이그레이션 파일 추가
+     - 파일명: 순서대로 넘버링 (001_, 002_, 003_...)
+     - 체크섬 변경 방지
+
+올바른 마이그레이션 추가 예시:
+```sql
+-- 004_add_new_column.sql (새 파일)
+ALTER TABLE builds ADD COLUMN new_field TEXT;
+
+-- ❌ 003_deploy_logs.sql 수정 금지!
+```
+
+Dockerfile 구조 이해:
+```dockerfile
+# Line 23: 빌드 컨테이너에 복사 (컴파일 타임 임베드용)
+COPY agent/migrations ./migrations
+
+# Line 26: 컴파일 시 임베드 발생
+RUN touch src/main.rs && cargo build --release
+
+# Line 44: 런타임 이미지에 복사 (실제로는 안 씀, 참고용)
+COPY --from=builder /build/migrations /app/migrations
+```
+
+✅ 핵심 교훈 (sqlx 마이그레이션)
+--------------------------------------------------------------------------------
+1. **컴파일 타임 임베드**: sqlx::migrate!()는 빌드 시 파일을 읽어 바이너리에 포함
+2. **파일 삭제만으론 부족**: 로컬에서 파일 삭제해도 Docker 이미지는 이전 버전 사용
+3. **재빌드 필수**: 마이그레이션 변경 시 항상 ./deploy.sh로 재빌드
+4. **불변성 원칙**: 한번 배포된 마이그레이션은 수정하지 말고 새 파일 추가
+5. **SQLite 제약**: 조건부 DDL 미지원으로 마이그레이션 관리가 더 까다로움
+
+✅ 디버깅 팁
+--------------------------------------------------------------------------------
+- 컨테이너 내 마이그레이션 확인: `docker exec <container> ls -la /app/migrations/`
+- 임베드된 마이그레이션은 파일 수정으로 변경 불가
+- sqlx 마이그레이션 테이블: `_sqlx_migrations` (적용 이력 저장)
+- 마이그레이션 체크섬 불일치 시: DB 초기화 또는 새 마이그레이션 추가
+
+---
+
+## Problem 32: 빌드 실패 시 로그 파일 404 및 상태 미업데이트 (2026-01-10)
+
+**증상**:
+- Build #9, #10이 실패했으나 status가 "Building"으로 남음
+- build-logs API가 404 반환
+
+**원인**:
+1. BuildService에서 prepare_source() 단계에서 에러 발생
+2. 로그 파일은 prepare_source() **이후**에 생성됨 (line 113)
+3. 에러 발생 시 로그 파일이 생성되지 않아 404 발생
+4. worker.rs에서 에러 발생 시 DB 상태를 업데이트하지 않음
+
+**로그 플로우**:
+```
+Line 104: 로그 디렉토리 생성 (/data/easycicd/logs/6/)
+Line 107: prepare_source() 호출 ← 여기서 실패!
+Line 113: 로그 파일 생성 ← 도달하지 못함
+```
+
+**worker.rs 에러 처리**:
+```rust
+if let Err(e) = process_build(...).await {
+    error!("[{}] Build #{} failed: {}", trace_id, build_id, e);
+    // ❌ 상태 업데이트 없음!
+}
+```
+
+**해결**:
+1. worker.rs에서 에러 발생 시 `build_repo.finish(build_id, BuildStatus::Failed)` 호출
+2. workspace 경로를 프로젝트 이름 → 프로젝트 ID로 변경
+
+**교훈**:
+- 로그 파일은 최대한 빨리 생성해야 함 (디렉토리 생성 직후)
+- 에러 처리에서 반드시 DB 상태 업데이트 필요
+- ID 기반 디렉토리 구조 사용 (이름은 중복/변경 가능)
+
+---
+
+## Problem 33: Proxy 502 에러 - 리팩토링 후 변수명 불일치 (2026-01-10)
+
+**증상**:
+- 프록시가 runtime 컨테이너로 라우팅 시 502 Bad Gateway 발생
+- 로그: "Backend request failed: error sending request for url (http://172.19.0.1:10002/)"
+
+**근본 원인**:
+Phase 5-6 리팩토링 과정에서 proxy/router.rs의 `handle_request()` 함수 파라미터가 변경됨
+- **변경 전**: `state: AppState`
+- **변경 후**: `ctx: AppContext`
+
+하지만 target_uri를 생성할 때 **변수명을 `context`로 잘못 사용**:
+```rust
+// ❌ 에러 코드 (line 169, 171):
+format!("http://{}:{}{}?{}", context.gateway_ip, ...)  // context는 존재하지 않음
+format!("http://{}:{}{}", context.gateway_ip, ...)
+
+// ✅ 올바른 코드:
+format!("http://{}:{}{}?{}", ctx.gateway_ip, ...)
+format!("http://{}:{}{}", ctx.gateway_ip, ...)
+```
+
+**왜 발견이 어려웠나**:
+1. **로컬 cargo build는 성공** - 로컬 환경에서는 문제가 없었음
+2. **Docker 빌드만 실패** - Docker 레이어 캐싱 때문에 오래된 코드 사용
+3. **`--no-cache`로도 실패** - Dockerfile이 복사하는 소스 코드 자체에 오타가 있었음
+4. **에러 메시지 불명확** - "2 previous errors" 표시만 있고 E0425 위치 안 보임
+
+**컴파일 에러**:
+```
+error[E0425]: cannot find value `context` in this scope
+  --> src/proxy/router.rs:169:38
+169 | format!("http://{}:{}{}?{}", context.gateway_ip, target_port, ...)
+    |                              ^^^^^^^ not found in this scope
+```
+
+**디버깅 과정**:
+1. 로그에서 "502 Bad Gateway" 확인
+2. 처음엔 Docker 네트워킹 문제로 추정
+   - `host.docker.internal` 시도 → 실패
+   - 컨테이너 이름으로 직접 접근 시도 → 실패
+3. Git 히스토리 확인하여 리팩토링 전 코드 비교
+   - **발견**: 원래는 `state.gateway_ip`를 사용했음
+4. `ctx.gateway_ip`로 수정했으나 변수명 오타(`context` vs `ctx`)
+
+**해결**:
+proxy/router.rs:169, 171 두 줄에서 `context.gateway_ip` → `ctx.gateway_ip` 수정
+
+**올바른 proxy 라우팅 방식**:
+```rust
+// 리팩토링 전 (작동함):
+let target_uri = format!("http://{}:{}{}", state.gateway_ip, target_port, target_path);
+
+// 리팩토링 후 (올바른 방식):
+let target_uri = format!("http://{}:{}{}", ctx.gateway_ip, target_port, target_path);
+```
+
+**왜 gateway_ip 방식이 맞는가**:
+- easycicd-agent와 runtime 컨테이너는 **같은 Docker 네트워크** (easycicd_easycicd)
+- gateway_ip (172.19.0.1)는 해당 네트워크의 게이트웨이
+- 컨테이너 → 호스트 포트 접근: `http://gateway_ip:host_port`
+- `host.docker.internal`은 Linux에서 기본 지원 안 됨 (Docker Desktop 전용)
+
+**교훈**:
+1. **리팩토링 시 변수명 일관성 체크**: 파라미터명 변경 시 전체 함수 검토 필요
+2. **Docker 빌드 캐싱 주의**: 로컬 빌드 성공 ≠ Docker 빌드 성공
+3. **에러 위치 명시적 확인**: `cargo build 2>&1 | grep "error\[E"` 로 정확한 에러 위치 파악
+4. **Git 히스토리 활용**: 작동하던 코드와 비교하여 변경점 파악
+5. **Docker 네트워킹 이해**: 컨테이너 간 통신은 gateway_ip 또는 컨테이너명 사용
+
+---
+
+## 문제 34: bollard 0.19 deprecated API (ListContainersOptions, RemoveContainerOptions)
+
+**날짜**: 2026-01-10
+**상황**: Container 기능 구현 후 배포 시 컴파일 에러
+
+**에러 메시지**:
+```
+error[E0061]: this function takes 0 arguments but 1 argument was supplied
+   --> src/docker/client.rs:XX:XX
+    |
+XX  |         self.docker.list_containers(Some(ListContainersOptions { ... }))
+    |                     ^^^^^^^^^^^^^^^ --------------- unexpected argument
+```
+
+**원인**:
+- bollard 0.19에서 `ListContainersOptions`와 `RemoveContainerOptions` API가 deprecated됨
+- 새 API는 builder 패턴 사용, 기존 struct 초기화 방식은 deprecated
+
+**해결**:
+```rust
+// 기존 (deprecated):
+let containers = self.docker.list_containers(Some(ListContainersOptions {
+    all: true,
+    ..Default::default()
+})).await?;
+
+// 해결: #[allow(deprecated)] 추가하여 기존 방식 유지
+#[allow(deprecated)]
+pub async fn list_containers(&self) -> Result<Vec<ContainerInfo>> {
+    let containers = self.docker.list_containers(Some(ListContainersOptions {
+        all: true,
+        ..Default::default()
+    })).await?;
+    // ...
+}
+```
+
+**교훈**:
+1. **크레이트 업데이트 시 CHANGELOG 확인**: deprecated API 파악
+2. **#[allow(deprecated)]**: 임시로 deprecated 경고 무시 가능
+3. **builder 패턴 마이그레이션**: 향후 새 API로 전환 필요
+
+---
+
+## 문제 35: BoundaryLogger service_entry 인자 개수 불일치
+
+**날짜**: 2026-01-10
+**상황**: ContainerService 구현 후 컴파일 에러
+
+**에러 메시지**:
+```
+error[E0061]: this function takes 5 arguments but 4 arguments were supplied
+   --> src/application/services/container_service.rs:XX:XX
+    |
+XX  |         self.logger.service_entry(trace_id, "ContainerService", "create_container", &req.name);
+    |                     ^^^^^^^^^^^^^ expected 5 arguments
+```
+
+**원인**:
+- `BoundaryLogger::service_entry` 시그니처: `(trace_id, from, service, method, params)` - 5개 인자
+- 4개만 전달함 (`from` 파라미터 누락)
+
+**해결**:
+```rust
+// 잘못된 호출 (4개 인자):
+self.logger.service_entry(trace_id, "ContainerService", "create_container", &req.name);
+
+// 올바른 호출 (5개 인자):
+self.logger.service_entry(trace_id, "API", "ContainerService", "create_container", &req.name);
+//                                  ^^^^^ "from" 파라미터 추가
+```
+
+**교훈**:
+1. **함수 시그니처 확인**: 새 메서드 호출 전 정의 확인
+2. **일관된 로깅 패턴**: 기존 서비스 코드 참조하여 동일 패턴 적용
+3. **IDE 자동완성 활용**: 파라미터 힌트로 누락 방지
+
+---
+
+## 문제 36: sqlx include_str! 삭제된 마이그레이션 파일 참조
+
+**날짜**: 2026-01-10
+**상황**: 마이그레이션 파일 통합 후 컴파일 에러
+
+**에러 메시지**:
+```
+error: couldn't read src/db/../../migrations/002_settings.sql: No such file or directory (os error 2)
+  --> src/db/queries.rs:XX:XX
+   |
+XX |         include_str!("../../migrations/002_settings.sql"),
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+**원인**:
+- `include_str!`는 **컴파일 타임**에 파일을 읽음
+- 마이그레이션 파일들을 001_initial.sql로 통합 후 개별 파일 삭제
+- queries.rs의 migrate() 함수가 여전히 삭제된 파일 참조
+
+**해결**:
+```rust
+// 기존 (삭제된 파일 참조):
+pub async fn migrate(&self) -> Result<(), sqlx::Error> {
+    let migrations = vec![
+        include_str!("../../migrations/001_initial.sql"),
+        include_str!("../../migrations/002_settings.sql"),  // 파일 없음!
+        include_str!("../../migrations/003_deploy_logs.sql"), // 파일 없음!
+    ];
+    // ...
+}
+
+// 해결: 함수 본문 비우고 deprecated 표시
+pub async fn migrate(&self) -> Result<(), sqlx::Error> {
+    // NOTE: This function is deprecated. Use sqlx::migrate!() in main.rs instead.
+    // All migrations are consolidated into 001_initial.sql.
+    Ok(())
+}
+```
+
+**교훈**:
+1. **include_str! 특성**: 컴파일 타임 파일 임베딩, 런타임이 아님
+2. **마이그레이션 통합 시 참조 확인**: 코드에서 개별 파일 참조 제거 필요
+3. **sqlx::migrate!() 사용 권장**: main.rs에서 한 번만 실행
+
+---
+
+## 문제 37: Migration 버전 충돌 (이전 적용된 마이그레이션 누락)
+
+**날짜**: 2026-01-10
+**상황**: 마이그레이션 파일 통합 후 앱 실행 시 에러
+
+**에러 메시지**:
+```
+Error: error occurred while running migrations:
+migration 2 was previously applied but is missing in the resolved migrations
+```
+
+**원인**:
+- 기존 DB에 002_settings.sql, 003_deploy_logs.sql이 적용된 기록 존재
+- `_sqlx_migrations` 테이블에 version 2, 3 레코드 있음
+- migrations 폴더에서 해당 파일 삭제됨
+- sqlx가 "이전에 적용된 마이그레이션이 사라짐" 에러 발생
+
+**해결**:
+```bash
+# DB 파일 완전 삭제 후 재생성
+sudo rm /data/easycicd/db.sqlite*
+
+# 또는 마이그레이션 기록 수동 삭제 (권장하지 않음)
+# sqlite3 /data/easycicd/db.sqlite "DELETE FROM _sqlx_migrations WHERE version > 1"
+```
+
+**교훈**:
+1. **마이그레이션 통합은 신중하게**: 이미 적용된 마이그레이션 수정은 위험
+2. **개발 환경에서만 DB 삭제**: 프로덕션에서는 마이그레이션 기록 유지 필요
+3. **통합 시 순서**: 먼저 새 통합 마이그레이션 적용 → 기존 기록 정리 → 파일 삭제
+
+---
+
+## 문제 38: SQLite DB 파일 생성 권한 오류
+
+**날짜**: 2026-01-10
+**상황**: DB 삭제 후 앱 재실행 시 에러
+
+**에러 메시지**:
+```
+Error: Database(Sqlite(SqliteError { code: 14, message: "unable to open database file" }))
+```
+
+**원인**:
+- `/data/easycicd/` 디렉토리 권한 문제
+- Docker 컨테이너가 새 DB 파일 생성 불가
+- `create_if_missing(true)` 옵션이 있어도 디렉토리 쓰기 권한 필요
+
+**해결**:
+```bash
+# 방법 1: 빈 DB 파일 미리 생성
+sudo touch /data/easycicd/db.sqlite
+sudo chmod 666 /data/easycicd/db.sqlite
+
+# 방법 2: 디렉토리 권한 수정
+sudo chmod 777 /data/easycicd/
+```
+
+**교훈**:
+1. **Docker 볼륨 권한**: 호스트-컨테이너 간 권한 불일치 주의
+2. **create_if_missing 한계**: 디렉토리 존재 및 쓰기 권한 필요
+3. **초기 설정 스크립트**: DB 디렉토리/파일 생성 자동화 권장

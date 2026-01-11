@@ -417,6 +417,111 @@ impl DockerClient {
         Ok(container_id)
     }
 
+    /// Run standalone container (DB, Redis, etc.)
+    pub async fn run_standalone_container(
+        &self,
+        name: &str,
+        image: &str,
+        host_port: i32,
+        env_vars: Option<&str>,
+        command: Option<&str>,
+    ) -> Result<String> {
+        self.ensure_image(image).await?;
+
+        let container_name = format!("container-{}", name);
+
+        // Stop and remove existing container with same name
+        let _ = self.stop_container(&container_name).await;
+        let _ = self.remove_container(&container_name).await;
+
+        // Parse env vars from JSON if provided
+        let env: Option<Vec<String>> = env_vars.and_then(|s| {
+            serde_json::from_str::<serde_json::Value>(s)
+                .ok()
+                .and_then(|v| {
+                    v.as_object().map(|obj| {
+                        obj.iter()
+                            .map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or(&v.to_string())))
+                            .collect()
+                    })
+                })
+        });
+
+        // Parse command if provided
+        let cmd: Option<Vec<String>> = command.map(|c| {
+            vec!["/bin/sh".to_string(), "-c".to_string(), c.to_string()]
+        });
+
+        let config = Config {
+            image: Some(image.to_string()),
+            cmd,
+            env,
+            host_config: Some(bollard::models::HostConfig {
+                port_bindings: Some({
+                    let mut port_bindings = HashMap::new();
+                    // Map container's default port to host port
+                    // Most images expose their service port, we'll just bind to host
+                    port_bindings.insert(
+                        format!("{}/tcp", host_port),
+                        Some(vec![bollard::models::PortBinding {
+                            host_ip: Some("0.0.0.0".to_string()),
+                            host_port: Some(host_port.to_string()),
+                        }]),
+                    );
+                    port_bindings
+                }),
+                publish_all_ports: Some(true),
+                restart_policy: Some(bollard::models::RestartPolicy {
+                    name: Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        info!("Creating standalone container: {}", container_name);
+        let container = self
+            .docker
+            .create_container(
+                Some(CreateContainerOptions {
+                    name: container_name.as_str(),
+                    ..Default::default()
+                }),
+                config,
+            )
+            .await
+            .context("Failed to create standalone container")?;
+
+        let container_id = container.id.clone();
+
+        // Connect to easycicd network
+        info!("Connecting standalone container to easycicd network");
+        self.docker
+            .connect_network(
+                "easycicd_easycicd",
+                bollard::network::ConnectNetworkOptions {
+                    container: container_id.as_str(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("Failed to connect container to network")?;
+
+        info!("Starting standalone container: {}", container_id);
+        if let Err(e) = self.docker
+            .start_container(&container_id, None::<StartContainerOptions<&str>>)
+            .await
+        {
+            return Err(anyhow::anyhow!(
+                "Failed to start standalone container '{}' on port {}: {}.",
+                container_name, host_port, e
+            ));
+        }
+
+        Ok(container_id)
+    }
+
     /// Get gateway IP for health checks
     pub fn gateway_ip(&self) -> &str {
         &self.gateway_ip
@@ -468,6 +573,7 @@ impl DockerClient {
     }
 
     /// Remove container
+    #[allow(deprecated)]
     pub async fn remove_container(&self, container_id: &str) -> Result<()> {
         info!("Removing container: {}", container_id);
         self.docker

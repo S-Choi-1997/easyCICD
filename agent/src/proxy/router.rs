@@ -9,23 +9,27 @@ use hyper::body::Bytes;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 use crate::db::models::Slot;
 use crate::state::AppContext;
+use crate::application::ports::repositories::ProjectRepository;
+use crate::infrastructure::logging::{TraceContext, Timer};
 
 // Helper to create error responses safely
 fn error_response(status: StatusCode, message: &str) -> Result<Response<Full<Bytes>>, hyper::Error> {
-    Response::builder()
+    match Response::builder()
         .status(status)
         .header("Content-Type", "text/plain; charset=utf-8")
         .body(Full::new(Bytes::from(message.to_string())))
-        .map_err(|e| {
+    {
+        Ok(response) => Ok(response),
+        Err(e) => {
             warn!("Failed to build error response: {:?}", e);
-            hyper::Error::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Response build error: {:?}", e),
-            ))
-        })
+            // Fallback to minimal response
+            Ok(Response::new(Full::new(Bytes::from(message.to_string()))))
+        }
+    }
 }
 
 pub async fn run_reverse_proxy(context: AppContext) -> Result<()> {
@@ -60,13 +64,17 @@ async fn handle_request(
     mut req: Request<Incoming>,
     ctx: AppContext,
 ) -> Result<Response<Full<Bytes>>, hyper::Error> {
-    let path = req.uri().path();
+    let path = req.uri().path().to_string();
     let method = req.method().clone();
     let headers = req.headers().clone();
 
+    // Generate trace ID for this proxy request
+    let trace_id = format!("proxy-{}", Uuid::new_v4());
+    let timer = Timer::start();
+
     // Log all incoming requests
     let host_header = headers.get("host").and_then(|h| h.to_str().ok()).unwrap_or("no-host");
-    info!("Proxy request: {} {} (Host: {})", method, path, host_header);
+    ctx.logger.api_entry(&trace_id, method.as_str(), &format!("PROXY {}", path), &format!("Host: {}", host_header));
 
     // Parse project name from path (/{project_name}/...) for fallback
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
@@ -117,22 +125,30 @@ async fn handle_request(
     };
 
     // Get project from database
+    info!("[{}] Routing request → project: '{}'", trace_id, project_name);
+    ctx.logger.repo_call(&trace_id, "Proxy", "ProjectRepo", "get_by_name");
+
     let project = match ctx.project_repo.get_by_name(&project_name).await {
-        Ok(Some(p)) => p,
+        Ok(Some(p)) => {
+            info!("[{}] Project found: id={}, active_slot={:?}, runtime_port={}", trace_id, p.id, p.active_slot, p.runtime_port);
+            p
+        }
         Ok(None) => {
-            warn!("Project not found: {}", project_name);
+            warn!("[{}] Project not found: {}", trace_id, project_name);
+            ctx.logger.api_exit(&trace_id, method.as_str(), &format!("PROXY {}", path), timer.elapsed_ms(), 404);
             return error_response(StatusCode::NOT_FOUND, "Project not found");
         }
         Err(e) => {
-            warn!("Failed to get project {}: {}", project_name, e);
+            warn!("[{}] Failed to get project {}: {}", trace_id, project_name, e);
+            ctx.logger.api_exit(&trace_id, method.as_str(), &format!("PROXY {}", path), timer.elapsed_ms(), 500);
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error");
         }
     };
 
-    // Determine target port based on active slot
-    let target_port = match project.active_slot {
-        Slot::Blue => project.blue_port,
-        Slot::Green => project.green_port,
+    // Determine container name and internal port based on active slot
+    let (container_name, runtime_port) = match project.active_slot {
+        Slot::Blue => (format!("project-{}-blue", project.id), project.runtime_port),
+        Slot::Green => (format!("project-{}-green", project.id), project.runtime_port),
     };
 
     // Determine target path based on routing mode
@@ -148,11 +164,11 @@ async fn handle_request(
         }
     };
 
-    // Preserve query string
+    // Preserve query string - route directly to container by name on the same Docker network
     let target_uri = if let Some(query) = req.uri().query() {
-        format!("http://{}:{}{}?{}", ctx.gateway_ip, target_port, target_path, query)
+        format!("http://{}:{}{}?{}", container_name, runtime_port, target_path, query)
     } else {
-        format!("http://{}:{}{}", ctx.gateway_ip, target_port, target_path)
+        format!("http://{}:{}{}", container_name, runtime_port, target_path)
     };
 
     info!(
@@ -166,7 +182,7 @@ async fn handle_request(
     info!("→ Forwarding to backend: {}", target_uri);
     let client = reqwest::Client::new();
 
-    let method = match *req.method() {
+    let reqwest_method = match *req.method() {
         Method::GET => reqwest::Method::GET,
         Method::POST => reqwest::Method::POST,
         Method::PUT => reqwest::Method::PUT,
@@ -191,7 +207,7 @@ async fn handle_request(
     };
 
     // Build request with headers
-    let mut req_builder = client.request(method, &target_uri);
+    let mut req_builder = client.request(reqwest_method, &target_uri);
 
     // Copy headers except Host
     for (name, value) in headers.iter() {
@@ -202,6 +218,8 @@ async fn handle_request(
         }
     }
 
+    info!("[{}] Forwarding to backend: {}", trace_id, target_uri);
+
     let response = match req_builder
         .body(body_bytes.to_vec())
         .send()
@@ -209,7 +227,8 @@ async fn handle_request(
     {
         Ok(res) => res,
         Err(e) => {
-            warn!("✗ Backend request failed: {}", e);
+            warn!("[{}] Backend request failed: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, method.as_str(), &format!("PROXY {}", path), timer.elapsed_ms(), 502);
             return error_response(StatusCode::BAD_GATEWAY, "Service unavailable");
         }
     };
@@ -217,11 +236,13 @@ async fn handle_request(
     // Convert response
     let status = response.status();
     let headers = response.headers().clone();
-    info!("← Backend response: {} (headers: {})", status, headers.len());
+    info!("[{}] Backend response: {}", trace_id, status);
+
     let body = match response.bytes().await {
         Ok(b) => b,
         Err(e) => {
-            warn!("Failed to read response body: {}", e);
+            warn!("[{}] Failed to read response body: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, method.as_str(), &format!("PROXY {}", path), timer.elapsed_ms(), 502);
             return error_response(StatusCode::BAD_GATEWAY, "Error reading response");
         }
     };
@@ -245,15 +266,14 @@ async fn handle_request(
             }
         }
     }
-    info!("← Sending response to client: {} ({} headers)", status, header_count);
+    ctx.logger.api_exit(&trace_id, method.as_str(), &format!("PROXY {}", path), timer.elapsed_ms(), status.as_u16());
 
-    response_builder
-        .body(Full::new(body))
-        .map_err(|e| {
-            warn!("Failed to build final response: {:?}", e);
-            hyper::Error::from(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Final response build error: {:?}", e),
-            ))
-        })
+    match response_builder.body(Full::new(body.clone())) {
+        Ok(response) => Ok(response),
+        Err(e) => {
+            warn!("[{}] Failed to build final response: {:?}", trace_id, e);
+            // Fallback to simple response
+            Ok(Response::new(Full::new(body)))
+        }
+    }
 }

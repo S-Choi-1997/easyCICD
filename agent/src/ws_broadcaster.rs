@@ -3,6 +3,7 @@ use tokio::time::{sleep, Duration};
 use tracing::{info, warn, error};
 
 use crate::state::AppContext;
+use crate::application::events::event_bus::EventBus;
 
 pub async fn run_ws_broadcaster(context: AppContext) -> Result<()> {
     info!("WebSocket broadcaster started");

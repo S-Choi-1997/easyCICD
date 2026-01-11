@@ -14,6 +14,7 @@ use crate::db::models::{CreateBuild, CreateProject, Slot};
 use crate::docker::client::DockerClient;
 use crate::state::AppContext;
 use crate::infrastructure::logging::{TraceContext, Timer};
+use crate::application::ports::repositories::{ProjectRepository, BuildRepository};
 
 pub fn projects_routes() -> Router<AppContext> {
     Router::new()
@@ -36,12 +37,12 @@ async fn list_projects(
 
     match ctx.project_repo.list().await {
         Ok(projects) => {
-            ctx.logger.api_exit(&trace_id, "GET", "/api/projects", timer.elapsed_ms(), "200");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/projects", timer.elapsed_ms(), 200);
             (StatusCode::OK, Json(projects))
         }
         Err(e) => {
             warn!("[{}] Failed to list projects: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "GET", "/api/projects", timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/projects", timer.elapsed_ms(), 500);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(vec![]))
         }
     }
@@ -59,16 +60,16 @@ async fn get_project(
 
     match ctx.project_repo.get(id).await {
         Ok(Some(project)) => {
-            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/projects/{}", id), timer.elapsed_ms(), "200");
+            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/projects/{}", id), timer.elapsed_ms(), 200);
             (StatusCode::OK, Json(Some(project)))
         }
         Ok(None) => {
-            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/projects/{}", id), timer.elapsed_ms(), "404");
+            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/projects/{}", id), timer.elapsed_ms(), 404);
             (StatusCode::NOT_FOUND, Json(None))
         }
         Err(e) => {
             warn!("[{}] Failed to get project: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/projects/{}", id), timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/projects/{}", id), timer.elapsed_ms(), 500);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(None))
         }
     }
@@ -117,12 +118,12 @@ async fn create_project(
 
     match ctx.project_repo.create(create_project).await {
         Ok(project) => {
-            ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), "201");
+            ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), 201);
             (StatusCode::CREATED, Json(Some(project)))
         }
         Err(e) => {
             warn!("[{}] Failed to create project: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), 500);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(None))
         }
     }
@@ -143,7 +144,7 @@ async fn trigger_build(
     let project = match ctx.project_repo.get(id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
-            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/builds", id), timer.elapsed_ms(), "404");
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/builds", id), timer.elapsed_ms(), 404);
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Project not found"})),
@@ -151,7 +152,7 @@ async fn trigger_build(
         }
         Err(e) => {
             warn!("[{}] Failed to get project: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/builds", id), timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/builds", id), timer.elapsed_ms(), 500);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Database error"})),
@@ -236,7 +237,7 @@ async fn trigger_build(
         Ok(b) => b,
         Err(e) => {
             warn!("[{}] Failed to create build: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/builds", id), timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/builds", id), timer.elapsed_ms(), 500);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Failed to create build"})),
@@ -247,7 +248,7 @@ async fn trigger_build(
     // Enqueue build
     ctx.build_queue.enqueue(project.id, build.id).await;
 
-    ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/builds", id), timer.elapsed_ms(), "201");
+    ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/builds", id), timer.elapsed_ms(), 201);
 
     (
         StatusCode::CREATED,
@@ -273,7 +274,7 @@ async fn delete_project(
     let project = match ctx.project_repo.get(id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
-            ctx.logger.api_exit(&trace_id, "DELETE", &format!("/api/projects/{}", id), timer.elapsed_ms(), "404");
+            ctx.logger.api_exit(&trace_id, "DELETE", &format!("/api/projects/{}", id), timer.elapsed_ms(), 404);
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Project not found"})),
@@ -281,7 +282,7 @@ async fn delete_project(
         }
         Err(e) => {
             warn!("[{}] Failed to get project: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "DELETE", &format!("/api/projects/{}", id), timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "DELETE", &format!("/api/projects/{}", id), timer.elapsed_ms(), 500);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Database error"})),
@@ -349,7 +350,7 @@ async fn delete_project(
     // Delete from database (this will cascade delete builds due to ON DELETE CASCADE)
     if let Err(e) = ctx.project_repo.delete(id).await {
         warn!("[{}] Failed to delete project from database: {}", trace_id, e);
-        ctx.logger.api_exit(&trace_id, "DELETE", &format!("/api/projects/{}", id), timer.elapsed_ms(), "500");
+        ctx.logger.api_exit(&trace_id, "DELETE", &format!("/api/projects/{}", id), timer.elapsed_ms(), 500);
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": "Failed to delete project"})),
@@ -357,7 +358,7 @@ async fn delete_project(
     }
 
     info!("[{}] Project {} deleted successfully", trace_id, project.name);
-    ctx.logger.api_exit(&trace_id, "DELETE", &format!("/api/projects/{}", id), timer.elapsed_ms(), "200");
+    ctx.logger.api_exit(&trace_id, "DELETE", &format!("/api/projects/{}", id), timer.elapsed_ms(), 200);
 
     (
         StatusCode::OK,
@@ -379,7 +380,7 @@ async fn start_containers(
     let project = match ctx.project_repo.get(id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
-            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/start", id), timer.elapsed_ms(), "404");
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/start", id), timer.elapsed_ms(), 404);
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Project not found"})),
@@ -387,7 +388,7 @@ async fn start_containers(
         }
         Err(e) => {
             warn!("[{}] Failed to get project: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/start", id), timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/start", id), timer.elapsed_ms(), 500);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Database error"})),
@@ -415,16 +416,17 @@ async fn start_containers(
             }
             Err(e) => {
                 warn!("[{}] Failed to start container {}: {}", trace_id, container_name, e);
+                let error_msg: String = format!("{}", e);
                 results.push(serde_json::json!({
                     "slot": format!("{:?}", slot).to_lowercase(),
                     "status": "error",
-                    "error": e.to_string()
+                    "error": error_msg
                 }));
             }
         }
     }
 
-    ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/start", id), timer.elapsed_ms(), "200");
+    ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/start", id), timer.elapsed_ms(), 200);
     (StatusCode::OK, Json(serde_json::json!({ "results": results })))
 }
 
@@ -442,7 +444,7 @@ async fn stop_containers(
     let project = match ctx.project_repo.get(id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
-            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/stop", id), timer.elapsed_ms(), "404");
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/stop", id), timer.elapsed_ms(), 404);
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Project not found"})),
@@ -450,7 +452,7 @@ async fn stop_containers(
         }
         Err(e) => {
             warn!("[{}] Failed to get project: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/stop", id), timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/stop", id), timer.elapsed_ms(), 500);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Database error"})),
@@ -478,16 +480,17 @@ async fn stop_containers(
             }
             Err(e) => {
                 warn!("[{}] Failed to stop container {}: {}", trace_id, container_name, e);
+                let error_msg: String = format!("{}", e);
                 results.push(serde_json::json!({
                     "slot": format!("{:?}", slot).to_lowercase(),
                     "status": "error",
-                    "error": e.to_string()
+                    "error": error_msg
                 }));
             }
         }
     }
 
-    ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/stop", id), timer.elapsed_ms(), "200");
+    ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/stop", id), timer.elapsed_ms(), 200);
     (StatusCode::OK, Json(serde_json::json!({ "results": results })))
 }
 
@@ -505,7 +508,7 @@ async fn restart_containers(
     let project = match ctx.project_repo.get(id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
-            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/restart", id), timer.elapsed_ms(), "404");
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/restart", id), timer.elapsed_ms(), 404);
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "Project not found"})),
@@ -513,7 +516,7 @@ async fn restart_containers(
         }
         Err(e) => {
             warn!("[{}] Failed to get project: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/restart", id), timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/restart", id), timer.elapsed_ms(), 500);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Database error"})),
@@ -541,15 +544,16 @@ async fn restart_containers(
             }
             Err(e) => {
                 warn!("[{}] Failed to restart container {}: {}", trace_id, container_name, e);
+                let error_msg: String = format!("{}", e);
                 results.push(serde_json::json!({
                     "slot": format!("{:?}", slot).to_lowercase(),
                     "status": "error",
-                    "error": e.to_string()
+                    "error": error_msg
                 }));
             }
         }
     }
 
-    ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/restart", id), timer.elapsed_ms(), "200");
+    ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/restart", id), timer.elapsed_ms(), 200);
     (StatusCode::OK, Json(serde_json::json!({ "results": results })))
 }

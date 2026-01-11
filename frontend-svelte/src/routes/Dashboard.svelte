@@ -8,10 +8,12 @@
 
   const API_BASE = '/api';
   let domain = null;
+  let containers = [];
+  let containersLoading = true;
+  let showAddMenu = false;
 
   onMount(async () => {
-    await loadDomain();
-    await loadProjects();
+    await Promise.all([loadDomain(), loadProjects(), loadContainers()]);
   });
 
   async function loadDomain() {
@@ -26,6 +28,20 @@
     }
   }
 
+  async function loadContainers() {
+    containersLoading = true;
+    try {
+      const response = await fetch(`${API_BASE}/containers`);
+      if (response.ok) {
+        containers = await response.json();
+      }
+    } catch (error) {
+      console.error('컨테이너 로드 실패:', error);
+    } finally {
+      containersLoading = false;
+    }
+  }
+
   async function handleTriggerBuild(projectId) {
     try {
       await triggerBuild(projectId);
@@ -35,10 +51,7 @@
   }
 
   async function handleDeleteProject(projectId, projectName) {
-    if (!confirm(`"${projectName}" 프로젝트를 정말 삭제하시겠습니까?`)) {
-      return;
-    }
-
+    if (!confirm(`"${projectName}" 프로젝트를 삭제하시겠습니까?`)) return;
     try {
       await deleteProject(projectId);
     } catch (error) {
@@ -46,66 +59,71 @@
     }
   }
 
-  async function handleStartContainers(projectId, event) {
-    event?.stopPropagation();
+  // 프로젝트 컨테이너 제어
+  async function handleProjectStart(projectId) {
     try {
-      const response = await fetch(`${API_BASE}/projects/${projectId}/containers/start`, {
-        method: 'POST'
-      });
-      if (response.ok) {
-        setTimeout(() => loadProjects(), 1000);
-      } else {
-        alert('컨테이너를 시작할 수 없습니다');
-      }
+      const response = await fetch(`${API_BASE}/projects/${projectId}/containers/start`, { method: 'POST' });
+      if (response.ok) setTimeout(() => loadProjects(), 1000);
+      else alert('컨테이너를 시작할 수 없습니다');
     } catch (error) {
       alert('컨테이너를 시작할 수 없습니다: ' + error.message);
     }
   }
 
-  async function handleStopContainers(projectId, event) {
-    event?.stopPropagation();
+  async function handleProjectStop(projectId) {
     try {
-      const response = await fetch(`${API_BASE}/projects/${projectId}/containers/stop`, {
-        method: 'POST'
-      });
-      if (response.ok) {
-        setTimeout(() => loadProjects(), 1000);
-      } else {
-        alert('컨테이너를 중지할 수 없습니다');
-      }
+      const response = await fetch(`${API_BASE}/projects/${projectId}/containers/stop`, { method: 'POST' });
+      if (response.ok) setTimeout(() => loadProjects(), 1000);
+      else alert('컨테이너를 중지할 수 없습니다');
     } catch (error) {
       alert('컨테이너를 중지할 수 없습니다: ' + error.message);
     }
   }
 
-  async function handleRestartContainers(projectId, event) {
-    event?.stopPropagation();
+  async function handleProjectRestart(projectId) {
     try {
-      const response = await fetch(`${API_BASE}/projects/${projectId}/containers/restart`, {
-        method: 'POST'
-      });
-      if (response.ok) {
-        setTimeout(() => loadProjects(), 1000);
-      } else {
-        alert('컨테이너를 재시작할 수 없습니다');
-      }
+      const response = await fetch(`${API_BASE}/projects/${projectId}/containers/restart`, { method: 'POST' });
+      if (response.ok) setTimeout(() => loadProjects(), 1000);
+      else alert('컨테이너를 재시작할 수 없습니다');
     } catch (error) {
       alert('컨테이너를 재시작할 수 없습니다: ' + error.message);
     }
   }
 
-  function getStatusClass(project) {
-    if (project.blue_container_id || project.green_container_id) {
-      return 'running';
+  // 독립 컨테이너 제어
+  async function handleContainerStart(id) {
+    try {
+      const response = await fetch(`${API_BASE}/containers/${id}/start`, { method: 'POST' });
+      if (response.ok) await loadContainers();
+      else alert('컨테이너를 시작할 수 없습니다');
+    } catch (error) {
+      alert('컨테이너를 시작할 수 없습니다: ' + error.message);
     }
-    return 'queued';
   }
 
-  function getStatusText(project) {
-    if (project.blue_container_id || project.green_container_id) {
-      return '실행 중';
+  async function handleContainerStop(id) {
+    try {
+      const response = await fetch(`${API_BASE}/containers/${id}/stop`, { method: 'POST' });
+      if (response.ok) await loadContainers();
+      else alert('컨테이너를 중지할 수 없습니다');
+    } catch (error) {
+      alert('컨테이너를 중지할 수 없습니다: ' + error.message);
     }
-    return '배포 안됨';
+  }
+
+  async function handleContainerDelete(id, name) {
+    if (!confirm(`"${name}" 컨테이너를 삭제하시겠습니까?`)) return;
+    try {
+      const response = await fetch(`${API_BASE}/containers/${id}`, { method: 'DELETE' });
+      if (response.ok) await loadContainers();
+      else alert('컨테이너를 삭제할 수 없습니다');
+    } catch (error) {
+      alert('컨테이너를 삭제할 수 없습니다: ' + error.message);
+    }
+  }
+
+  function isProjectRunning(project) {
+    return !!(project.blue_container_id || project.green_container_id);
   }
 
   function getProjectUrl(projectName) {
@@ -113,16 +131,33 @@
     const protocol = domain && !domain.includes('localhost') ? 'https' : 'http';
     return `${protocol}://${projectName}-app.${baseDomain}/`;
   }
+
+  $: totalCount = $projects.length + containers.length;
+  $: loading = $projectsLoading || containersLoading;
 </script>
 
 <header>
   <div class="header-content">
-    <a href="/" use:link style="text-decoration: none; color: inherit; cursor: pointer;">
+    <a href="/" use:link style="text-decoration: none; color: inherit;">
       <h1>Easy CI/CD</h1>
     </a>
     <div class="header-actions">
       <a href="/settings" use:link class="btn btn-secondary">⚙️ 설정</a>
-      <a href="/setup" use:link class="btn btn-primary">+ 새 프로젝트</a>
+      <div class="dropdown">
+        <button class="btn btn-primary" on:click={() => showAddMenu = !showAddMenu}>
+          + 추가
+        </button>
+        {#if showAddMenu}
+          <div class="dropdown-menu" on:mouseleave={() => showAddMenu = false}>
+            <a href="/setup" use:link class="dropdown-item" on:click={() => showAddMenu = false}>
+              🚀 프로젝트
+            </a>
+            <a href="/containers/new" use:link class="dropdown-item" on:click={() => showAddMenu = false}>
+              📦 컨테이너
+            </a>
+          </div>
+        {/if}
+      </div>
     </div>
   </div>
 </header>
@@ -130,93 +165,118 @@
 <div class="container">
   <div class="card">
     <div class="card-header">
-      <h2 class="card-title">프로젝트 목록</h2>
-      <span class="project-count">{$projects.length}개 프로젝트</span>
+      <h2 class="card-title">컨테이너 목록</h2>
+      <span class="item-count">{totalCount}개</span>
     </div>
 
-    {#if $projectsLoading}
+    {#if loading}
       <Skeleton type="project-card" count={3} />
     {:else if $projectsError}
       <div class="empty-state" transition:fade>
-        <h3>프로젝트 로딩 오류</h3>
+        <h3>로딩 오류</h3>
         <p>{$projectsError}</p>
-        <button on:click={loadProjects} class="btn btn-primary mt-2">다시 시도</button>
+        <button on:click={() => { loadProjects(); loadContainers(); }} class="btn btn-primary mt-2">다시 시도</button>
       </div>
-    {:else if $projects.length === 0}
+    {:else if totalCount === 0}
       <div class="empty-state" transition:fade>
-        <h3>프로젝트가 없습니다</h3>
-        <p>첫 번째 프로젝트를 만들어보세요</p>
-        <a href="/setup" use:link class="btn btn-primary mt-2">+ 새 프로젝트</a>
+        <h3>컨테이너가 없습니다</h3>
+        <p>프로젝트나 컨테이너를 추가하세요</p>
+        <div class="empty-actions">
+          <a href="/setup" use:link class="btn btn-primary">🚀 프로젝트 추가</a>
+          <a href="/containers/new" use:link class="btn btn-secondary">📦 컨테이너 추가</a>
+        </div>
       </div>
     {:else}
-      <div transition:fade>
+      <div class="items-list" transition:fade>
+        <!-- 프로젝트 (빌드 가능한 컨테이너) -->
         {#each $projects as project (project.id)}
-          <div class="project-card" transition:fade>
-            <div on:click={() => window.location.hash = `/build/${project.id}`}
+          <div class="item-card" transition:fade>
+            <div class="item-main" on:click={() => window.location.hash = `/build/${project.id}`}
                  on:keydown={(e) => e.key === 'Enter' && (window.location.hash = `/build/${project.id}`)}
-                 role="button"
-                 tabindex="0"
-                 style="cursor: pointer;">
-              <div class="project-header">
-                <div>
-                  <div class="project-name">{project.name}</div>
-                  <a
-                    href="{getProjectUrl(project.name)}"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="project-url-link"
-                    on:click|stopPropagation>
-                    {getProjectUrl(project.name)}
-                  </a>
+                 role="button" tabindex="0">
+              <div class="item-header">
+                <div class="item-info">
+                  <span class="item-type project">프로젝트</span>
+                  <span class="item-name">{project.name}</span>
                 </div>
-                <span class="status-badge status-{getStatusClass(project)}">
-                  <span class="status-dot"></span>
-                  {getStatusText(project)}
+                <span class="status-badge {isProjectRunning(project) ? 'running' : 'stopped'}">
+                  {isProjectRunning(project) ? '실행 중' : '중지'}
                 </span>
               </div>
-
-              <div class="project-info">
-                <div><strong>레포지토리:</strong> {project.repo}</div>
-                <div><strong>브랜치:</strong> {project.branch}</div>
-                <div><strong>활성 슬롯:</strong> {project.active_slot}</div>
+              <div class="item-details">
+                <span>{project.repo}</span>
+                <span>·</span>
+                <span>{project.branch}</span>
                 {#if project.updated_at}
-                  <div><strong>마지막 업데이트:</strong> {formatRelativeTime(project.updated_at)}</div>
+                  <span>·</span>
+                  <span>{formatRelativeTime(project.updated_at)}</span>
+                {/if}
+              </div>
+              {#if isProjectRunning(project)}
+                <a href="{getProjectUrl(project.name)}" target="_blank" rel="noopener noreferrer"
+                   class="item-url" on:click|stopPropagation>
+                  {getProjectUrl(project.name)}
+                </a>
+              {/if}
+            </div>
+            <div class="item-actions">
+              <button on:click|stopPropagation={() => handleTriggerBuild(project.id)} class="btn btn-primary btn-sm" title="빌드">
+                🔨 빌드
+              </button>
+              {#if isProjectRunning(project)}
+                <button on:click|stopPropagation={() => handleProjectRestart(project.id)} class="btn btn-warning btn-sm" title="재시작">
+                  🔄
+                </button>
+                <button on:click|stopPropagation={() => handleProjectStop(project.id)} class="btn btn-danger btn-sm" title="중지">
+                  ■
+                </button>
+              {:else}
+                <button on:click|stopPropagation={() => handleProjectStart(project.id)} class="btn btn-success btn-sm" title="시작">
+                  ▶
+                </button>
+              {/if}
+              <button on:click|stopPropagation={() => handleDeleteProject(project.id, project.name)} class="btn btn-outline btn-sm" title="삭제">
+                🗑️
+              </button>
+            </div>
+          </div>
+        {/each}
+
+        <!-- 독립 컨테이너 -->
+        {#each containers as container (container.id)}
+          <div class="item-card" transition:fade>
+            <div class="item-main">
+              <div class="item-header">
+                <div class="item-info">
+                  <span class="item-type container">컨테이너</span>
+                  <span class="item-name">{container.name}</span>
+                </div>
+                <span class="status-badge {container.status === 'Running' ? 'running' : 'stopped'}">
+                  {container.status === 'Running' ? '실행 중' : '중지'}
+                </span>
+              </div>
+              <div class="item-details">
+                <span>{container.image}</span>
+                {#if container.port}
+                  <span>·</span>
+                  <span>포트 {container.port}</span>
                 {/if}
               </div>
             </div>
-
-            <div class="project-actions">
-              <a href="{getProjectUrl(project.name)}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm">
-                🔗 열기
-              </a>
-              <button on:click|stopPropagation={() => handleTriggerBuild(project.id)} class="btn btn-primary btn-sm">
-                ▶️ 빌드 시작
-              </button>
-              <div class="container-controls">
-                <button
-                  on:click={(e) => handleStartContainers(project.id, e)}
-                  class="btn btn-success btn-sm"
-                  disabled={!!(project.blue_container_id || project.green_container_id)}
-                  title="컨테이너 시작">
-                  ▶ 시작
+            <div class="item-actions">
+              {#if container.status === 'Running'}
+                <button on:click={() => handleContainerStop(container.id)} class="btn btn-danger btn-sm" title="중지">
+                  ■
                 </button>
-                <button
-                  on:click={(e) => handleRestartContainers(project.id, e)}
-                  class="btn btn-warning btn-sm"
-                  disabled={!(project.blue_container_id || project.green_container_id)}
-                  title="컨테이너 재시작">
-                  🔄 재시작
+              {:else}
+                <button on:click={() => handleContainerStart(container.id)} class="btn btn-success btn-sm" title="시작">
+                  ▶
                 </button>
-                <button
-                  on:click={(e) => handleStopContainers(project.id, e)}
-                  class="btn btn-danger btn-sm"
-                  disabled={!(project.blue_container_id || project.green_container_id)}
-                  title="컨테이너 중지">
-                  ■ 중지
-                </button>
-              </div>
-              <button on:click|stopPropagation={() => handleDeleteProject(project.id, project.name)} class="btn btn-danger btn-sm">
-                🗑️ 삭제
+              {/if}
+              <button on:click={() => handleContainerDelete(container.id, container.name)}
+                      class="btn btn-outline btn-sm" title="삭제"
+                      disabled={container.status === 'Running'}>
+                🗑️
               </button>
             </div>
           </div>
@@ -227,24 +287,147 @@
 </div>
 
 <style>
-  .project-count {
+  .item-count {
     color: var(--gray-600);
     font-size: 0.875rem;
+  }
+
+  .items-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .item-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--gray-200);
+    gap: 1rem;
+  }
+
+  .item-card:last-child {
+    border-bottom: none;
+  }
+
+  .item-main {
+    flex: 1;
+    cursor: pointer;
+    min-width: 0;
+  }
+
+  .item-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .item-info {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  .item-type {
+    font-size: 0.625rem;
+    font-weight: 600;
+    padding: 0.125rem 0.375rem;
+    border-radius: 0.25rem;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
+
+  .item-type.project {
+    background: #dbeafe;
+    color: #1d4ed8;
+  }
+
+  .item-type.container {
+    background: #f3e8ff;
+    color: #7c3aed;
+  }
+
+  .item-name {
+    font-weight: 600;
+    font-size: 1rem;
+    color: var(--gray-900);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .item-details {
+    font-size: 0.813rem;
+    color: var(--gray-600);
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .item-url {
+    font-size: 0.75rem;
+    color: var(--primary);
+    text-decoration: none;
+    margin-top: 0.25rem;
+    display: inline-block;
+  }
+
+  .item-url:hover {
+    text-decoration: underline;
+  }
+
+  .item-actions {
+    display: flex;
+    gap: 0.375rem;
+    flex-shrink: 0;
+  }
+
+  .status-badge {
+    font-size: 0.75rem;
+    font-weight: 500;
+    padding: 0.25rem 0.5rem;
+    border-radius: 9999px;
+    flex-shrink: 0;
+  }
+
+  .status-badge.running {
+    background: #dcfce7;
+    color: #166534;
+  }
+
+  .status-badge.stopped {
+    background: #f3f4f6;
+    color: #6b7280;
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--gray-600);
+  }
+
+  .empty-state h3 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: var(--gray-800);
+  }
+
+  .empty-actions {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: center;
+    margin-top: 1rem;
   }
 
   .mt-2 {
     margin-top: 0.5rem;
   }
 
-  .container-controls {
-    display: flex;
-    gap: 0.25rem;
-    border: 1px solid var(--gray-300);
-    border-radius: 0.375rem;
-    padding: 0.125rem;
-    background: var(--gray-50);
-  }
-
+  /* Buttons */
   .btn-success {
     background: #10b981;
     color: white;
@@ -265,25 +448,48 @@
     background: #d97706;
   }
 
+  .btn-outline {
+    background: transparent;
+    border: 1px solid var(--gray-300);
+    color: var(--gray-600);
+  }
+
+  .btn-outline:hover:not(:disabled) {
+    background: var(--gray-100);
+  }
+
   .btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
 
-  .btn:disabled:hover {
-    transform: none;
-    box-shadow: none;
+  /* Dropdown */
+  .dropdown {
+    position: relative;
   }
 
-  .project-url-link {
-    font-size: 0.875rem;
-    color: var(--primary);
+  .dropdown-menu {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 0.25rem;
+    background: white;
+    border-radius: 0.5rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    min-width: 140px;
+    z-index: 100;
+    overflow: hidden;
+  }
+
+  .dropdown-item {
+    display: block;
+    padding: 0.625rem 1rem;
+    color: var(--gray-700);
     text-decoration: none;
-    padding: 0.125rem 0;
-    display: inline-block;
+    font-size: 0.875rem;
   }
 
-  .project-url-link:hover {
-    text-decoration: underline;
+  .dropdown-item:hover {
+    background: var(--gray-100);
   }
 </style>

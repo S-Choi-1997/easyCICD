@@ -91,8 +91,8 @@ where
             timestamp: Event::now(),
         }).await;
 
-        // Setup paths
-        let workspace_path = PathBuf::from("/data/workspace").join(&project.name);
+        // Setup paths (using project ID instead of name)
+        let workspace_path = PathBuf::from("/data/workspace").join(project.id.to_string());
         let output_path = PathBuf::from("/data/output").join(format!("build{}", build.id));
         let cache_path = PathBuf::from("/data/cache").join(&project.cache_type);
         let log_path = PathBuf::from(&build.log_path);
@@ -199,7 +199,8 @@ where
         self.logger.external_call(trace_id, "BuildService", "Git", "prepare_source");
         let timer = Timer::start();
 
-        if workspace_path.exists() {
+        let git_dir = workspace_path.join(".git");
+        if workspace_path.exists() && git_dir.exists() {
             info!("[{}] Pulling latest changes for {}", trace_id, repo);
             let status = tokio::process::Command::new("git")
                 .arg("-C")

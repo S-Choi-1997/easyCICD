@@ -66,7 +66,18 @@
       "Bash(tree:*)",
       "Bash(wc:*)",
       "Bash(/root/.cargo/bin/cargo check:*)",
-      "Bash(~/.cargo/bin/cargo check)"
+      "Bash(~/.cargo/bin/cargo check)",
+      "Bash(ls:*)",
+      "Bash(for file in agent/src/api/{projects,builds,settings}.rs)",
+      "Bash(do sed -i 's/api_exit\\(\\\\\\(.*\\\\\\), \"\"\\\\\\([0-9]\\\\{3\\\\}\\\\\\)\"\"\\)/api_exit\\(\\\\1, \\\\2\\)/g' \"$file\")",
+      "Bash(done)",
+      "Bash(sudo rm -rf /data/easycicd/db.sqlite*)",
+      "Bash(cargo doc:*)",
+      "Bash(sudo rm:*)",
+      "Bash(sudo chmod:*)",
+      "Bash(sudo touch:*)",
+      "Bash(docker volume:*)",
+      "Bash(docker start:*)"
     ]
   }
 }

@@ -179,7 +179,7 @@ impl ProjectDetector {
                 runtime_command: "nginx -c /app/nginx.conf".to_string(),
                 health_check_url: "/".to_string(),
                 working_directory: None,
-                runtime_port: 80,
+                runtime_port: 8080,  // Nginx 기본 포트 (Vite/React/Vue 빌드 산출물의 nginx.conf 기본값)
             })
         } else {
             // Backend project (Express, NestJS, etc.)
@@ -292,7 +292,7 @@ impl ProjectDetector {
             runtime_command: "nginx -c /app/nginx.conf".to_string(),
             health_check_url: "/".to_string(),
             working_directory: None,
-            runtime_port: 80,
+            runtime_port: 8080,  // Nginx 기본 포트 (nginx.conf 기본값)
         })
     }
 

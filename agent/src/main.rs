@@ -9,11 +9,12 @@ mod ws_broadcaster;
 mod github;
 mod application;
 mod infrastructure;
+mod workers;
 
 use anyhow::Result;
 use axum::{routing::{get, post}, Router};
 use tower_http::services::ServeDir;
-use tracing::info;
+use tracing::{info, error};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use sqlx::SqlitePool;
@@ -23,6 +24,7 @@ use api::{api_routes, github_webhook, ws_handler};
 use proxy::run_reverse_proxy;
 use ws_broadcaster::run_ws_broadcaster;
 use docker::DockerClient;
+use application::ports::repositories::ProjectRepository;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -111,9 +113,9 @@ async fn main() -> Result<()> {
                 .await
                 .expect("Failed to bind port 3000");
             info!("API server listening on 0.0.0.0:3000");
-            axum::serve(listener, app)
-                .await
-                .expect("API server failed");
+            if let Err(e) = axum::serve(listener, app).await {
+                error!("API server failed: {}", e);
+            }
         }
     });
 
@@ -147,6 +149,16 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Start Port Scanner worker
+    let port_scanner = tokio::spawn({
+        let pool = pool.clone();
+        async move {
+            if let Err(e) = workers::run_port_scanner(pool).await {
+                tracing::error!("Port scanner error: {}", e);
+            }
+        }
+    });
+
     info!("All services started successfully");
 
     // Keep the application running
@@ -166,6 +178,9 @@ async fn main() -> Result<()> {
         _ = ws_broadcaster => {
             info!("WebSocket broadcaster stopped");
         }
+        _ = port_scanner => {
+            info!("Port scanner stopped");
+        }
     }
 
     info!("Shutting down...");
@@ -177,7 +192,7 @@ async fn main() -> Result<()> {
 /// 1. Removes container IDs from DB if containers don't exist
 /// 2. Removes orphan containers (containers without matching projects in DB)
 async fn synchronize_container_states(context: &AppContext, docker: &DockerClient) -> Result<()> {
-    let projects = context.project_repo.list().await?;
+    let projects: Vec<crate::db::models::Project> = context.project_repo.list().await?;
 
     // Step 1: Check DB projects and clean up dead containers from DB
     for project in &projects {
@@ -216,16 +231,10 @@ async fn synchronize_container_states(context: &AppContext, docker: &DockerClien
     }
 
     // Step 2: Clean up orphan containers (containers without projects in DB)
-    use bollard::container::ListContainersOptions;
-    use std::collections::HashMap;
-
-    let mut filters = HashMap::new();
-    filters.insert("name".to_string(), vec!["project-".to_string()]);
-
+    #[allow(deprecated)]
     let containers = docker.docker_api()
-        .list_containers(Some(ListContainersOptions {
+        .list_containers(Some(bollard::container::ListContainersOptions::<String> {
             all: true,
-            filters,
             ..Default::default()
         }))
         .await?;

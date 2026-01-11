@@ -1,6 +1,7 @@
 mod webhook;
 mod projects;
 mod builds;
+mod containers;
 mod ws;
 mod settings;
 mod github_api;
@@ -9,6 +10,7 @@ pub mod middleware;
 pub use webhook::github_webhook;
 pub use projects::projects_routes;
 pub use builds::builds_routes;
+pub use containers::containers_routes;
 pub use ws::ws_handler;
 pub use middleware::TraceIdLayer;
 
@@ -19,6 +21,7 @@ pub fn api_routes() -> Router<AppContext> {
     Router::new()
         .nest("/projects", projects_routes())
         .nest("/builds", builds_routes())
+        .nest("/containers", containers_routes())
         .route("/settings/webhook-secret", get(settings::get_webhook_secret))
         .route("/settings/domain", post(settings::set_domain))
         .route("/settings/domain", get(settings::get_domain))

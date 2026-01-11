@@ -1,6 +1,6 @@
 <script>
     import { onMount } from 'svelte';
-    import { push } from 'svelte-spa-router';
+    import { link, push } from 'svelte-spa-router';
 
     const API_BASE = '/api';
 
@@ -160,8 +160,8 @@ health_check_url = "/"`;
                 branch: selectedBranch,
             });
 
-            if (pathFilter) {
-                params.append('path_filter', pathFilter);
+            if (workingDirectory) {
+                params.append('path_filter', workingDirectory);
             }
 
             if (workflowPath && workflowPath !== '.github/workflows/') {
@@ -298,266 +298,286 @@ health_check_url = "${config.health_check_url || ''}"`;
     }
 </script>
 
-<div class="container">
-    <div class="page-header">
-        <h1>프로젝트 등록</h1>
-        <a href="/" class="btn-secondary">← 대시보드로 돌아가기</a>
-    </div>
-
-    <!-- GitHub PAT Section -->
-    <section class="pat-section">
-        <div class="section-header">
-            <h2>GitHub 연동</h2>
-            {#if patConfigured}
-                <div class="pat-connected-section">
-                    <div class="status-badge connected">
-                        ✓ 연결됨 ({githubUsername})
-                    </div>
-                    <button on:click={deletePAT} class="btn-delete-pat">PAT 삭제</button>
-                </div>
-            {/if}
+<header>
+    <div class="header-content">
+        <a href="/" use:link style="text-decoration: none; color: inherit; cursor: pointer;">
+            <h1>Easy CI/CD</h1>
+        </a>
+        <div class="header-actions">
+            <a href="/" use:link class="btn btn-secondary">← 대시보드</a>
         </div>
-        {#if !patConfigured}
-            <div class="status-badge disconnected">
-                × 연결 안됨
-            </div>
-            <div class="input-group">
-                <input
-                    type="password"
-                    bind:value={githubPAT}
-                    placeholder="GitHub Personal Access Token"
-                    class="input-full"
-                />
-                <button on:click={savePAT} class="btn-primary">PAT 저장</button>
-            </div>
-            <p class="help-text">
-                <a href="https://github.com/settings/tokens/new?scopes=repo,read:user" target="_blank">
-                    GitHub PAT 생성하기 →
-                </a>
-            </p>
-        {/if}
-    </section>
+    </div>
+</header>
 
-    {#if patConfigured}
-        <!-- Project Setup Section -->
-        <section class="project-section">
-            <h2>프로젝트 설정</h2>
+<div class="container">
+    <div class="card">
+        <div class="card-header">
+            <h2 class="card-title">프로젝트 등록</h2>
+        </div>
 
-            <!-- Project Name -->
-            <div class="form-group">
-                <label>프로젝트 이름</label>
-                <input
-                    type="text"
-                    bind:value={projectName}
-                    placeholder="my-awesome-app"
-                    class="input-short"
-                />
-            </div>
-
-            <!-- Repository Selection -->
-            <div class="form-group">
-                <label>레포지토리</label>
-                <select bind:value={selectedRepo} on:change={onRepoChange} class="select-full">
-                    <option value="">레포지토리 선택...</option>
-                    {#each repositories as repo}
-                        <option value={repo.full_name}>
-                            {repo.full_name} {repo.private ? '🔒' : ''}
-                        </option>
-                    {/each}
-                </select>
-            </div>
-
-            <!-- Branch Selection -->
-            <div class="form-group">
-                <label>브랜치</label>
-                <select bind:value={selectedBranch} on:change={onBranchChange} class="select-medium" disabled={branches.length === 0}>
-                    <option value="">브랜치 선택...</option>
-                    {#each branches as branch}
-                        <option value={branch.name}>
-                            {branch.name} {branch.protected ? '🛡️' : ''}
-                        </option>
-                    {/each}
-                </select>
-                {#if branches.length === 0 && selectedRepo}
-                    <p class="help-text">레포지토리를 선택하면 브랜치 목록이 로드됩니다</p>
+        <div class="form-content">
+            <!-- GitHub PAT Section -->
+            <div class="section-box">
+                <div class="section-header">
+                    <h3>GitHub 연동</h3>
+                    {#if patConfigured}
+                        <div class="pat-connected-section">
+                            <span class="status-badge connected">✓ 연결됨 ({githubUsername})</span>
+                            <button on:click={deletePAT} class="btn btn-danger btn-sm">PAT 삭제</button>
+                        </div>
+                    {/if}
+                </div>
+                {#if !patConfigured}
+                    <span class="status-badge disconnected">× 연결 안됨</span>
+                    <div class="input-group">
+                        <input
+                            type="password"
+                            bind:value={githubPAT}
+                            placeholder="GitHub Personal Access Token"
+                            class="form-input"
+                        />
+                        <button on:click={savePAT} class="btn btn-primary">PAT 저장</button>
+                    </div>
+                    <p class="form-help">
+                        <a href="https://github.com/settings/tokens/new?scopes=repo,read:user" target="_blank">
+                            GitHub PAT 생성하기 →
+                        </a>
+                    </p>
                 {/if}
             </div>
 
-            <!-- Path Filter (Optional) -->
-            <div class="form-group">
-                <label>빌드 트리거 경로 필터 (선택사항)</label>
-                <input
-                    type="text"
-                    bind:value={pathFilter}
-                    placeholder="예: backend/** 또는 src/**/*.js"
-                    class="input-medium"
-                />
-                <p class="help-text">특정 경로의 파일 변경 시에만 빌드 실행. 비워두면 모든 변경사항에 반응</p>
-            </div>
+            {#if patConfigured}
+                <!-- Project Setup Section -->
+                <div class="section-box">
+                    <h3>프로젝트 설정</h3>
 
-            <!-- Workflow Path (Optional) -->
-            <div class="form-group">
-                <label>워크플로우 파일 경로 (선택사항)</label>
-                <input
-                    type="text"
-                    bind:value={workflowPath}
-                    placeholder=".github/workflows/"
-                    class="input-medium"
-                />
-                <p class="help-text">GitHub Actions 워크플로우 파일이 저장된 디렉토리</p>
-            </div>
+                    <!-- Project Name -->
+                    <div class="form-group">
+                        <label for="projectName">프로젝트 이름 *</label>
+                        <input
+                            type="text"
+                            id="projectName"
+                            bind:value={projectName}
+                            placeholder="my-awesome-app"
+                            class="form-input"
+                        />
+                        <span class="form-help">프로젝트를 구분할 이름입니다.</span>
+                    </div>
 
-            <!-- Working Directory (Optional) -->
-            <div class="form-group">
-                <label>빌드 실행 디렉토리 (선택사항, 모노레포용)</label>
-                <input
-                    type="text"
-                    bind:value={workingDirectory}
-                    placeholder="예: packages/backend (비워두면 레포지토리 루트)"
-                    class="input-medium"
-                />
-                <p class="help-text">빌드 명령어를 실행할 하위 디렉토리</p>
-            </div>
+                    <!-- Repository Selection -->
+                    <div class="form-group">
+                        <label for="repo">레포지토리 *</label>
+                        <select id="repo" bind:value={selectedRepo} on:change={onRepoChange} class="form-input">
+                            <option value="">레포지토리 선택...</option>
+                            {#each repositories as repo}
+                                <option value={repo.full_name}>
+                                    {repo.full_name} {repo.private ? '🔒' : ''}
+                                </option>
+                            {/each}
+                        </select>
+                    </div>
 
-            <!-- Runtime Port -->
-            <div class="form-group">
-                <label>애플리케이션 포트 (선택사항)</label>
-                <input
-                    type="number"
-                    bind:value={runtimePort}
-                    placeholder={runtimePortPlaceholder}
-                    class="input-short"
-                    min="1"
-                    max="65535"
-                />
-                <p class="help-text">컨테이너 내부에서 앱이 사용하는 포트 번호. 비워두면 {runtimePortPlaceholder}번 포트 사용</p>
-            </div>
+                    <!-- Branch Selection -->
+                    <div class="form-group">
+                        <label for="branch">브랜치 *</label>
+                        <select id="branch" bind:value={selectedBranch} on:change={onBranchChange} class="form-input" disabled={branches.length === 0}>
+                            <option value="">브랜치 선택...</option>
+                            {#each branches as branch}
+                                <option value={branch.name}>
+                                    {branch.name} {branch.protected ? '🛡️' : ''}
+                                </option>
+                            {/each}
+                        </select>
+                        {#if branches.length === 0 && selectedRepo}
+                            <span class="form-help">레포지토리를 선택하면 브랜치 목록이 로드됩니다</span>
+                        {/if}
+                    </div>
 
-            <!-- Auto-detect Button with Status -->
-            {#if selectedRepo && selectedBranch}
-                <div class="detect-container">
-                    <button on:click={detectProject} class="btn-detect" disabled={detectionStatus === 'loading'}>
-                        🔍 자동 감지
-                    </button>
-                    {#if detectionStatus === 'idle'}
-                        <span class="status-icon idle">○</span>
-                    {:else if detectionStatus === 'loading'}
-                        <span class="status-icon loading">⟳</span>
-                    {:else if detectionStatus === 'success'}
-                        <span class="status-icon success">✓</span>
-                    {:else if detectionStatus === 'failed'}
-                        <span class="status-icon failed">✗</span>
+                    <!-- Working Directory (Optional) -->
+                    <div class="form-group">
+                        <label for="workingDir">빌드 실행 디렉토리 (선택)</label>
+                        <input
+                            type="text"
+                            id="workingDir"
+                            bind:value={workingDirectory}
+                            placeholder="예: packages/backend"
+                            class="form-input"
+                        />
+                        <span class="form-help">
+                            레포지토리 안에 여러 프로젝트가 있을 때 사용합니다.<br>
+                            예를 들어 frontend/, backend/ 폴더가 있다면 backend를 입력하세요.<br>
+                            비워두면 레포지토리 최상위에서 빌드합니다.
+                        </span>
+                    </div>
+
+                    <!-- Path Filter (Optional) -->
+                    <div class="form-group">
+                        <label for="pathFilter">빌드 트리거 경로 (선택)</label>
+                        <input
+                            type="text"
+                            id="pathFilter"
+                            bind:value={pathFilter}
+                            placeholder="예: backend/** 또는 src/**"
+                            class="form-input"
+                        />
+                        <span class="form-help">
+                            이 경로의 파일이 변경될 때만 자동 빌드됩니다.<br>
+                            비워두면 어떤 파일이 바뀌어도 빌드가 실행됩니다.
+                        </span>
+                    </div>
+
+                    <!-- Workflow Path (Optional) -->
+                    <div class="form-group">
+                        <label for="workflowPath">워크플로우 파일 경로 (선택)</label>
+                        <input
+                            type="text"
+                            id="workflowPath"
+                            bind:value={workflowPath}
+                            placeholder=".github/workflows/"
+                            class="form-input"
+                        />
+                        <span class="form-help">
+                            GitHub Actions 설정 파일이 있는 폴더입니다.<br>
+                            대부분의 경우 기본값을 그대로 사용하면 됩니다.
+                        </span>
+                    </div>
+
+                    <!-- Runtime Port -->
+                    <div class="form-group">
+                        <label for="port">애플리케이션 포트 (선택)</label>
+                        <input
+                            type="number"
+                            id="port"
+                            bind:value={runtimePort}
+                            placeholder={runtimePortPlaceholder}
+                            class="form-input"
+                            style="width: 120px;"
+                            min="1"
+                            max="65535"
+                        />
+                        <span class="form-help">
+                            앱이 실행될 때 사용하는 포트 번호입니다.<br>
+                            모르겠다면 비워두세요. 자동으로 감지합니다.
+                        </span>
+                    </div>
+
+                    <!-- Auto-detect Button with Status -->
+                    {#if selectedRepo && selectedBranch}
+                        <div class="detect-container">
+                            <button on:click={detectProject} class="btn btn-primary" disabled={detectionStatus === 'loading'}>
+                                {detectionStatus === 'loading' ? '감지 중...' : '🔍 자동 감지'}
+                            </button>
+                            {#if detectionStatus === 'success'}
+                                <span class="status-icon success">✓</span>
+                            {:else if detectionStatus === 'failed'}
+                                <span class="status-icon failed">✗</span>
+                            {/if}
+                        </div>
+                    {/if}
+
+                    <!-- Detected Configuration Display -->
+                    {#if detectedConfig}
+                        <div class="detected-config">
+                            <h4>✓ 감지된 설정</h4>
+                            <div class="config-grid">
+                                <div class="config-item">
+                                    <span class="config-label">프로젝트 타입</span>
+                                    <span class="config-value">{detectedConfig.project_type}</span>
+                                </div>
+                                <div class="config-item">
+                                    <span class="config-label">빌드 이미지</span>
+                                    <span class="config-value">{detectedConfig.build_image}</span>
+                                </div>
+                                <div class="config-item">
+                                    <span class="config-label">빌드 명령어</span>
+                                    <span class="config-value">{detectedConfig.build_command}</span>
+                                </div>
+                                <div class="config-item">
+                                    <span class="config-label">실행 이미지</span>
+                                    <span class="config-value">{detectedConfig.runtime_image}</span>
+                                </div>
+                            </div>
+                            <button on:click={() => showAdvanced = !showAdvanced} class="btn btn-secondary btn-sm" style="margin-top: 1rem;">
+                                {showAdvanced ? '▼ 고급 설정 숨기기' : '▶ 고급 설정 보기'}
+                            </button>
+                        </div>
+                    {/if}
+
+                    <!-- Advanced Settings (TOML format) -->
+                    {#if showAdvanced}
+                        <div class="advanced-section">
+                            <h4>고급 설정</h4>
+                            <span class="form-help" style="margin-bottom: 0.75rem; display: block;">
+                                설정을 직접 수정할 수 있습니다. 주석(#)도 사용 가능합니다.
+                            </span>
+                            <textarea
+                                bind:value={configToml}
+                                class="form-input config-textarea"
+                                rows="9"
+                                placeholder={tomlPlaceholder}
+                            ></textarea>
+                            {#if tomlError}
+                                <div class="error-message">{tomlError}</div>
+                            {/if}
+                        </div>
+                    {/if}
+
+                    <!-- Register Button -->
+                    {#if detectedConfig || showAdvanced}
+                        <div class="form-actions">
+                            <button on:click={() => push('/')} class="btn btn-secondary">취소</button>
+                            <button on:click={registerProject} class="btn btn-primary">프로젝트 등록</button>
+                        </div>
                     {/if}
                 </div>
             {/if}
-
-            <!-- Detected Configuration Display -->
-            {#if detectedConfig}
-                <div class="detected-config">
-                    <h3>✓ 감지된 설정</h3>
-                    <div class="config-item">
-                        <strong>프로젝트 타입:</strong> {detectedConfig.project_type}
-                    </div>
-                    <div class="config-item">
-                        <strong>빌드 이미지:</strong> {detectedConfig.build_image}
-                    </div>
-                    <div class="config-item">
-                        <strong>빌드 명령어:</strong> {detectedConfig.build_command}
-                    </div>
-                    <div class="config-item">
-                        <strong>실행 이미지:</strong> {detectedConfig.runtime_image}
-                    </div>
-
-                    <button on:click={() => showAdvanced = !showAdvanced} class="btn-toggle">
-                        {showAdvanced ? '▼ 고급 설정 숨기기' : '▶ 고급 설정 보기'}
-                    </button>
-                </div>
-            {/if}
-
-            <!-- Advanced Settings (TOML format) -->
-            {#if showAdvanced}
-                <div class="advanced-section">
-                    <h3>고급 설정</h3>
-                    <p class="help-text">
-                        YML처럼 간단한 형식으로 설정을 수정할 수 있습니다. 주석(#)도 사용 가능합니다.
-                    </p>
-                    <textarea
-                        bind:value={configToml}
-                        class="config-textarea"
-                        rows="9"
-                        placeholder={tomlPlaceholder}
-                    ></textarea>
-                    {#if tomlError}
-                        <div class="error-message">{tomlError}</div>
-                    {/if}
-                    <div class="help-text" style="margin-top: 0.5rem;">
-                        <strong>예시:</strong><br>
-                        <code>build_image</code>: 빌드할 Docker 이미지 (예: node:20, python:3.11)<br>
-                        <code>build_command</code>: 빌드 명령어<br>
-                        <code>runtime_image</code>: 실행할 Docker 이미지<br>
-                        <code>runtime_command</code>: 실행 명령어<br>
-                        <code>health_check_url</code>: 헬스체크 경로
-                    </div>
-                </div>
-            {/if}
-
-            <!-- Register Button -->
-            {#if detectedConfig || showAdvanced}
-                <div class="actions">
-                    <button on:click={registerProject} class="btn-success">
-                        프로젝트 등록
-                    </button>
-                    <button on:click={() => push('/')} class="btn-secondary">
-                        취소
-                    </button>
-                </div>
-            {/if}
-        </section>
-    {/if}
+        </div>
+    </div>
 </div>
 
 <style>
+    /* Container - 다른 페이지와 통일 */
     .container {
         max-width: 800px;
-        margin: 2rem auto;
-        padding: 0 1rem;
+        margin: 0 auto;
+        padding: 2rem 1rem;
     }
 
-    h1 {
-        font-size: 2rem;
-        margin-bottom: 2rem;
-        color: var(--gray-900);
-    }
-
-    .page-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 2rem;
-    }
-
-    h2 {
-        font-size: 1.5rem;
-        margin-bottom: 1rem;
-        color: var(--gray-800);
-    }
-
-    h3 {
-        font-size: 1.25rem;
-        margin-bottom: 1rem;
-        color: var(--gray-700);
-    }
-
-    section {
+    /* Card - app.css 기반 */
+    .card {
         background: white;
-        padding: 1.5rem;
         border-radius: 0.5rem;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-        margin-bottom: 2rem;
+        overflow: hidden;
     }
 
-    .pat-section {
-        padding: 1rem 1.5rem;
+    .card-header {
+        padding: 1.5rem;
+        border-bottom: 1px solid #e5e7eb;
+    }
+
+    .card-title {
+        font-size: 1.25rem;
+        font-weight: 700;
+        margin: 0;
+        color: #111827;
+    }
+
+    .form-content {
+        padding: 1.5rem;
+    }
+
+    /* Section Box */
+    .section-box {
+        margin-bottom: 2rem;
+        padding-bottom: 1.5rem;
+        border-bottom: 1px solid #e5e7eb;
+    }
+
+    .section-box:last-child {
+        margin-bottom: 0;
+        padding-bottom: 0;
+        border-bottom: none;
     }
 
     .section-header {
@@ -567,18 +587,91 @@ health_check_url = "${config.health_check_url || ''}"`;
         margin-bottom: 1rem;
     }
 
-    .section-header h2 {
-        font-size: 1.125rem;
-        margin-bottom: 0;
+    .section-header h3 {
+        margin: 0;
     }
 
+    h3 {
+        font-size: 1.125rem;
+        font-weight: 600;
+        margin-bottom: 1rem;
+        color: #111827;
+    }
+
+    h4 {
+        font-size: 1rem;
+        font-weight: 600;
+        margin-bottom: 0.75rem;
+        color: #111827;
+    }
+
+    /* Form Elements */
+    .form-group {
+        margin-bottom: 1.25rem;
+    }
+
+    .form-group label {
+        display: block;
+        font-weight: 500;
+        margin-bottom: 0.375rem;
+        color: #374151;
+        font-size: 0.875rem;
+    }
+
+    .form-input {
+        width: 100%;
+        padding: 0.5rem 0.75rem;
+        border: 1px solid #d1d5db;
+        border-radius: 0.375rem;
+        font-size: 0.875rem;
+    }
+
+    .form-input:focus {
+        outline: none;
+        border-color: #3b82f6;
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+
+    select.form-input:disabled {
+        background-color: #f3f4f6;
+        color: #6b7280;
+        cursor: not-allowed;
+    }
+
+    .form-help {
+        font-size: 0.75rem;
+        color: #6b7280;
+        margin-top: 0.25rem;
+        display: block;
+    }
+
+    .form-help a {
+        color: #3b82f6;
+        text-decoration: none;
+    }
+
+    .form-help a:hover {
+        text-decoration: underline;
+    }
+
+    /* Input Group */
+    .input-group {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 0.5rem;
+    }
+
+    .input-group .form-input {
+        flex: 1;
+    }
+
+    /* Status Badge */
     .status-badge {
         display: inline-block;
-        padding: 0.375rem 0.75rem;
-        border-radius: 0.375rem;
+        padding: 0.25rem 0.5rem;
+        border-radius: 0.25rem;
         font-weight: 500;
-        font-size: 0.875rem;
-        margin-bottom: 0.5rem;
+        font-size: 0.75rem;
     }
 
     .status-badge.connected {
@@ -589,251 +682,116 @@ health_check_url = "${config.health_check_url || ''}"`;
     .status-badge.disconnected {
         background: #fee2e2;
         color: #991b1b;
+        margin-bottom: 0.75rem;
     }
 
     .pat-connected-section {
         display: flex;
         align-items: center;
-        gap: 1rem;
+        gap: 0.75rem;
     }
 
-    .btn-delete-pat {
-        background: #ef4444;
-        color: white;
-        padding: 0.375rem 0.75rem;
-        font-size: 0.875rem;
-    }
-
-    .btn-delete-pat:hover {
-        background: #dc2626;
-    }
-
-    .form-group {
-        margin-bottom: 1.5rem;
-    }
-
-    label {
-        display: block;
-        font-weight: 500;
-        margin-bottom: 0.5rem;
-        color: var(--gray-700);
-    }
-
-    input, select {
-        padding: 0.5rem;
-        border: 1px solid var(--gray-300);
-        border-radius: 0.375rem;
-        font-size: 1rem;
-    }
-
-    select:disabled {
-        background-color: var(--gray-100);
-        color: var(--gray-500);
-        cursor: not-allowed;
-    }
-
-    .input-full, .select-full {
-        width: 100%;
-    }
-
-    .input-medium, .select-medium {
-        width: 60%;
-    }
-
-    .input-short, .select-short {
-        width: 40%;
-    }
-
-    .input-group {
-        display: flex;
-        gap: 0.5rem;
-        margin-bottom: 0.5rem;
-    }
-
-    .help-text {
-        font-size: 0.875rem;
-        color: var(--gray-600);
-        margin-top: 0.25rem;
-    }
-
-    .pat-section .help-text {
-        margin-bottom: 0;
-    }
-
-    .help-text a {
-        color: var(--primary);
-        text-decoration: none;
-    }
-
-    .help-text a:hover {
-        text-decoration: underline;
-    }
-
-    button {
-        padding: 0.5rem 1rem;
-        border: none;
-        border-radius: 0.375rem;
-        font-weight: 500;
-        cursor: pointer;
-        transition: all 0.2s;
-    }
-
-    .btn-primary {
-        background: var(--primary);
-        color: white;
-    }
-
-    .btn-primary:hover {
-        background: var(--primary-dark);
-    }
-
+    /* Detect Container */
     .detect-container {
         display: flex;
         align-items: center;
-        gap: 1rem;
-        margin: 1rem 0;
-    }
-
-    .btn-detect {
-        background: #3b82f6;
-        color: white;
-        font-size: 1.125rem;
-        padding: 0.75rem 1.5rem;
-    }
-
-    .btn-detect:hover:not(:disabled) {
-        background: #2563eb;
-    }
-
-    .btn-detect:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
+        gap: 0.75rem;
+        margin: 1.5rem 0;
+        padding: 1rem;
+        background: #f9fafb;
+        border-radius: 0.375rem;
     }
 
     .status-icon {
-        font-size: 1.5rem;
+        font-size: 1.25rem;
         font-weight: bold;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 2rem;
-        height: 2rem;
+        width: 1.75rem;
+        height: 1.75rem;
         border-radius: 50%;
-    }
-
-    .status-icon.idle {
-        color: #9ca3af;
-        border: 2px solid #9ca3af;
-    }
-
-    .status-icon.loading {
-        color: #3b82f6;
-        animation: spin 1s linear infinite;
     }
 
     .status-icon.success {
         color: #10b981;
         background: #d1fae5;
-        border: 2px solid #10b981;
     }
 
     .status-icon.failed {
         color: #ef4444;
         background: #fee2e2;
-        border: 2px solid #ef4444;
     }
 
-    @keyframes spin {
-        from {
-            transform: rotate(0deg);
-        }
-        to {
-            transform: rotate(360deg);
-        }
-    }
-
-    .btn-toggle {
-        background: var(--gray-200);
-        color: var(--gray-700);
-        margin-top: 1rem;
-    }
-
-    .btn-toggle:hover {
-        background: var(--gray-300);
-    }
-
-    .btn-success {
-        background: #10b981;
-        color: white;
-        font-size: 1.125rem;
-        padding: 0.75rem 2rem;
-    }
-
-    .btn-success:hover {
-        background: #059669;
-    }
-
-    .btn-secondary {
-        background: var(--gray-300);
-        color: var(--gray-700);
-        padding: 0.75rem 2rem;
-    }
-
-    .btn-secondary:hover {
-        background: var(--gray-400);
-    }
-
+    /* Detected Config */
     .detected-config {
         background: #f0fdf4;
-        border: 2px solid #10b981;
+        border: 1px solid #10b981;
         border-radius: 0.5rem;
-        padding: 1.5rem;
+        padding: 1.25rem;
         margin: 1.5rem 0;
     }
 
+    .detected-config h4 {
+        color: #065f46;
+        margin-bottom: 1rem;
+    }
+
+    .config-grid {
+        display: grid;
+        gap: 0.5rem;
+    }
+
     .config-item {
-        padding: 0.5rem 0;
-        border-bottom: 1px solid #d1fae5;
+        display: flex;
+        padding: 0.5rem;
+        background: white;
+        border-radius: 0.25rem;
     }
 
-    .config-item:last-child {
-        border-bottom: none;
+    .config-label {
+        font-weight: 500;
+        color: #374151;
+        min-width: 100px;
+        font-size: 0.813rem;
     }
 
+    .config-value {
+        color: #111827;
+        font-family: monospace;
+        font-size: 0.813rem;
+        word-break: break-all;
+    }
+
+    /* Advanced Section */
     .advanced-section {
-        background: var(--gray-50);
-        padding: 1.5rem;
+        background: #f9fafb;
+        padding: 1.25rem;
         border-radius: 0.5rem;
         margin-top: 1.5rem;
-    }
-
-    .actions {
-        display: flex;
-        gap: 1rem;
-        margin-top: 2rem;
-        justify-content: center;
+        border: 1px solid #e5e7eb;
     }
 
     .config-textarea {
-        width: 100%;
         font-family: 'Courier New', monospace;
-        font-size: 0.875rem;
-        padding: 1rem;
-        border: 1px solid var(--gray-300);
-        border-radius: 0.375rem;
-        background: #f9fafb;
         resize: vertical;
+        min-height: 180px;
     }
 
-    .config-textarea:focus {
-        outline: none;
-        border-color: var(--primary);
-        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    /* Form Actions */
+    .form-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.75rem;
+        margin-top: 1.5rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid #e5e7eb;
     }
 
+    /* Error Message */
     .error-message {
         margin-top: 0.5rem;
-        padding: 0.75rem;
+        padding: 0.75rem 1rem;
         background: #fee2e2;
         color: #991b1b;
         border-radius: 0.375rem;

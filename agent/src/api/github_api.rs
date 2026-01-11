@@ -10,6 +10,7 @@ use tracing::warn;
 use crate::github::{GitHubClient, ProjectDetector};
 use crate::state::AppContext;
 use crate::infrastructure::logging::{TraceContext, Timer};
+use crate::application::ports::repositories::SettingsRepository;
 
 #[derive(Debug, Deserialize)]
 pub struct SetPATRequest {
@@ -34,7 +35,7 @@ pub async fn set_github_pat(
         Ok(user) => user,
         Err(e) => {
             warn!("[{}] Invalid GitHub PAT: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "POST", "/api/github/pat", timer.elapsed_ms(), "400");
+            ctx.logger.api_exit(&trace_id, "POST", "/api/github/pat", timer.elapsed_ms(), 400);
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -47,7 +48,7 @@ pub async fn set_github_pat(
     // Save PAT to settings
     if let Err(e) = ctx.settings_repo.set("github_pat", &payload.github_pat).await {
         warn!("[{}] Failed to save PAT: {}", trace_id, e);
-        ctx.logger.api_exit(&trace_id, "POST", "/api/github/pat", timer.elapsed_ms(), "500");
+        ctx.logger.api_exit(&trace_id, "POST", "/api/github/pat", timer.elapsed_ms(), 500);
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
@@ -56,7 +57,7 @@ pub async fn set_github_pat(
         );
     }
 
-    ctx.logger.api_exit(&trace_id, "POST", "/api/github/pat", timer.elapsed_ms(), "200");
+    ctx.logger.api_exit(&trace_id, "POST", "/api/github/pat", timer.elapsed_ms(), 200);
     (
         StatusCode::OK,
         Json(serde_json::json!({
@@ -82,7 +83,7 @@ pub async fn get_github_pat_status(
             let client = GitHubClient::new(pat);
             match client.get_user().await {
                 Ok(user) => {
-                    ctx.logger.api_exit(&trace_id, "GET", "/api/github/pat", timer.elapsed_ms(), "200");
+                    ctx.logger.api_exit(&trace_id, "GET", "/api/github/pat", timer.elapsed_ms(), 200);
                     (
                         StatusCode::OK,
                         Json(serde_json::json!({
@@ -93,7 +94,7 @@ pub async fn get_github_pat_status(
                 }
                 Err(e) => {
                     warn!("[{}] PAT validation failed: {}", trace_id, e);
-                    ctx.logger.api_exit(&trace_id, "GET", "/api/github/pat", timer.elapsed_ms(), "200");
+                    ctx.logger.api_exit(&trace_id, "GET", "/api/github/pat", timer.elapsed_ms(), 200);
                     (
                         StatusCode::OK,
                         Json(serde_json::json!({
@@ -105,7 +106,7 @@ pub async fn get_github_pat_status(
             }
         }
         _ => {
-            ctx.logger.api_exit(&trace_id, "GET", "/api/github/pat", timer.elapsed_ms(), "200");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/pat", timer.elapsed_ms(), 200);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -128,7 +129,7 @@ pub async fn delete_github_pat(
 
     if let Err(e) = ctx.settings_repo.delete("github_pat").await {
         warn!("[{}] Failed to delete PAT: {}", trace_id, e);
-        ctx.logger.api_exit(&trace_id, "DELETE", "/api/github/pat", timer.elapsed_ms(), "500");
+        ctx.logger.api_exit(&trace_id, "DELETE", "/api/github/pat", timer.elapsed_ms(), 500);
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
@@ -137,7 +138,7 @@ pub async fn delete_github_pat(
         );
     }
 
-    ctx.logger.api_exit(&trace_id, "DELETE", "/api/github/pat", timer.elapsed_ms(), "200");
+    ctx.logger.api_exit(&trace_id, "DELETE", "/api/github/pat", timer.elapsed_ms(), 200);
     (
         StatusCode::OK,
         Json(serde_json::json!({
@@ -161,7 +162,7 @@ pub async fn list_repositories(
         Ok(Some(pat)) => pat,
         _ => {
             warn!("[{}] No GitHub PAT configured", trace_id);
-            ctx.logger.api_exit(&trace_id, "GET", "/api/github/repositories", timer.elapsed_ms(), "400");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/repositories", timer.elapsed_ms(), 400);
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -176,12 +177,12 @@ pub async fn list_repositories(
 
     match client.list_repositories().await {
         Ok(repos) => {
-            ctx.logger.api_exit(&trace_id, "GET", "/api/github/repositories", timer.elapsed_ms(), "200");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/repositories", timer.elapsed_ms(), 200);
             (StatusCode::OK, Json(serde_json::json!({ "repositories": repos })))
         }
         Err(e) => {
             warn!("[{}] Failed to fetch repositories: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "GET", "/api/github/repositories", timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/repositories", timer.elapsed_ms(), 500);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -214,7 +215,7 @@ pub async fn list_branches(
         Ok(Some(pat)) => pat,
         _ => {
             warn!("[{}] No GitHub PAT configured", trace_id);
-            ctx.logger.api_exit(&trace_id, "GET", "/api/github/branches", timer.elapsed_ms(), "400");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/branches", timer.elapsed_ms(), 400);
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -229,12 +230,12 @@ pub async fn list_branches(
 
     match client.list_branches(&params.owner, &params.repo).await {
         Ok(branches) => {
-            ctx.logger.api_exit(&trace_id, "GET", "/api/github/branches", timer.elapsed_ms(), "200");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/branches", timer.elapsed_ms(), 200);
             (StatusCode::OK, Json(serde_json::json!({ "branches": branches })))
         }
         Err(e) => {
             warn!("[{}] Failed to fetch branches: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "GET", "/api/github/branches", timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/branches", timer.elapsed_ms(), 500);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -268,7 +269,7 @@ pub async fn list_folders(
         Ok(Some(pat)) => pat,
         _ => {
             warn!("[{}] No GitHub PAT configured", trace_id);
-            ctx.logger.api_exit(&trace_id, "GET", "/api/github/folders", timer.elapsed_ms(), "400");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/folders", timer.elapsed_ms(), 400);
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -291,12 +292,12 @@ pub async fn list_folders(
                 .map(|item| item.path.clone())
                 .collect();
 
-            ctx.logger.api_exit(&trace_id, "GET", "/api/github/folders", timer.elapsed_ms(), "200");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/folders", timer.elapsed_ms(), 200);
             (StatusCode::OK, Json(serde_json::json!({ "folders": folders })))
         }
         Err(e) => {
             warn!("[{}] Failed to fetch folders: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "GET", "/api/github/folders", timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/folders", timer.elapsed_ms(), 500);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -332,7 +333,7 @@ pub async fn detect_project(
         Ok(Some(pat)) => pat,
         _ => {
             warn!("[{}] No GitHub PAT configured", trace_id);
-            ctx.logger.api_exit(&trace_id, "GET", "/api/github/detect", timer.elapsed_ms(), "400");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/detect", timer.elapsed_ms(), 400);
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -356,12 +357,12 @@ pub async fn detect_project(
         .await
     {
         Ok(config) => {
-            ctx.logger.api_exit(&trace_id, "GET", "/api/github/detect", timer.elapsed_ms(), "200");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/detect", timer.elapsed_ms(), 200);
             (StatusCode::OK, Json(serde_json::json!(config)))
         }
         Err(e) => {
             warn!("[{}] Failed to detect project: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "GET", "/api/github/detect", timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/github/detect", timer.elapsed_ms(), 500);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({

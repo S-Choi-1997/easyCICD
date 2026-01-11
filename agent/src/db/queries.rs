@@ -16,57 +16,8 @@ impl Database {
     }
 
     pub async fn migrate(&self) -> Result<(), sqlx::Error> {
-        // Create schema_migrations table if not exists
-        sqlx::raw_sql(
-            "CREATE TABLE IF NOT EXISTS schema_migrations (
-                version INTEGER PRIMARY KEY,
-                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )"
-        )
-        .execute(&self.pool)
-        .await?;
-
-        // Helper function to check if migration was applied
-        let is_applied = |version: i32| async move {
-            let result: Option<(i32,)> = sqlx::query_as(
-                "SELECT version FROM schema_migrations WHERE version = ?"
-            )
-            .bind(version)
-            .fetch_optional(&self.pool)
-            .await?;
-            Ok::<bool, sqlx::Error>(result.is_some())
-        };
-
-        // Helper function to mark migration as applied
-        let mark_applied = |version: i32| async move {
-            sqlx::query("INSERT INTO schema_migrations (version) VALUES (?)")
-                .bind(version)
-                .execute(&self.pool)
-                .await?;
-            Ok::<(), sqlx::Error>(())
-        };
-
-        // Migration 1: Initial schema
-        if !is_applied(1).await? {
-            let migration1 = include_str!("../../migrations/001_initial.sql");
-            sqlx::raw_sql(migration1).execute(&self.pool).await?;
-            mark_applied(1).await?;
-        }
-
-        // Migration 2: Settings table
-        if !is_applied(2).await? {
-            let migration2 = include_str!("../../migrations/002_settings.sql");
-            sqlx::raw_sql(migration2).execute(&self.pool).await?;
-            mark_applied(2).await?;
-        }
-
-        // Migration 3: Deploy log path
-        if !is_applied(3).await? {
-            let migration3 = include_str!("../../migrations/003_deploy_logs.sql");
-            sqlx::raw_sql(migration3).execute(&self.pool).await?;
-            mark_applied(3).await?;
-        }
-
+        // NOTE: This function is deprecated. Use sqlx::migrate!() in main.rs instead.
+        // All migrations are consolidated into 001_initial.sql.
         Ok(())
     }
 

@@ -10,6 +10,7 @@ use tracing::warn;
 
 use crate::state::AppContext;
 use crate::infrastructure::logging::{TraceContext, Timer};
+use crate::application::ports::repositories::BuildRepository;
 
 pub fn builds_routes() -> Router<AppContext> {
     Router::new()
@@ -45,12 +46,12 @@ async fn list_builds(
 
     match builds {
         Ok(builds) => {
-            ctx.logger.api_exit(&trace_id, "GET", "/api/builds", timer.elapsed_ms(), "200");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/builds", timer.elapsed_ms(), 200);
             (StatusCode::OK, Json(builds))
         }
         Err(e) => {
             warn!("[{}] Failed to list builds: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "GET", "/api/builds", timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "GET", "/api/builds", timer.elapsed_ms(), 500);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(vec![]))
         }
     }
@@ -68,16 +69,16 @@ async fn get_build(
 
     match ctx.build_repo.get(id).await {
         Ok(Some(build)) => {
-            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}", id), timer.elapsed_ms(), "200");
+            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}", id), timer.elapsed_ms(), 200);
             (StatusCode::OK, Json(Some(build)))
         }
         Ok(None) => {
-            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}", id), timer.elapsed_ms(), "404");
+            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}", id), timer.elapsed_ms(), 404);
             (StatusCode::NOT_FOUND, Json(None))
         }
         Err(e) => {
             warn!("[{}] Failed to get build: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}", id), timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}", id), timer.elapsed_ms(), 500);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(None))
         }
     }
@@ -98,22 +99,22 @@ async fn get_build_logs(
             // Read log file (backward compatibility: only build logs)
             match tokio::fs::read_to_string(&build.log_path).await {
                 Ok(content) => {
-                    ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/logs", id), timer.elapsed_ms(), "200");
+                    ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/logs", id), timer.elapsed_ms(), 200);
                     (StatusCode::OK, content)
                 }
                 Err(_) => {
-                    ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/logs", id), timer.elapsed_ms(), "404");
+                    ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/logs", id), timer.elapsed_ms(), 404);
                     (StatusCode::NOT_FOUND, String::from("Log file not found"))
                 }
             }
         }
         Ok(None) => {
-            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/logs", id), timer.elapsed_ms(), "404");
+            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/logs", id), timer.elapsed_ms(), 404);
             (StatusCode::NOT_FOUND, String::from("Build not found"))
         }
         Err(e) => {
             warn!("[{}] Failed to get build logs: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/logs", id), timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/logs", id), timer.elapsed_ms(), 500);
             (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))
         }
     }
@@ -134,22 +135,22 @@ async fn get_build_logs_only(
             // Read build log file only
             match tokio::fs::read_to_string(&build.log_path).await {
                 Ok(content) => {
-                    ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/build-logs", id), timer.elapsed_ms(), "200");
+                    ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/build-logs", id), timer.elapsed_ms(), 200);
                     (StatusCode::OK, content)
                 }
                 Err(_) => {
-                    ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/build-logs", id), timer.elapsed_ms(), "404");
+                    ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/build-logs", id), timer.elapsed_ms(), 404);
                     (StatusCode::NOT_FOUND, String::from("Build log file not found"))
                 }
             }
         }
         Ok(None) => {
-            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/build-logs", id), timer.elapsed_ms(), "404");
+            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/build-logs", id), timer.elapsed_ms(), 404);
             (StatusCode::NOT_FOUND, String::from("Build not found"))
         }
         Err(e) => {
             warn!("[{}] Failed to get build logs: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/build-logs", id), timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/build-logs", id), timer.elapsed_ms(), 500);
             (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))
         }
     }
@@ -171,26 +172,26 @@ async fn get_deploy_logs(
             if let Some(deploy_log_path) = &build.deploy_log_path {
                 match tokio::fs::read_to_string(deploy_log_path).await {
                     Ok(content) => {
-                        ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/deploy-logs", id), timer.elapsed_ms(), "200");
+                        ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/deploy-logs", id), timer.elapsed_ms(), 200);
                         (StatusCode::OK, content)
                     }
                     Err(_) => {
-                        ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/deploy-logs", id), timer.elapsed_ms(), "200");
+                        ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/deploy-logs", id), timer.elapsed_ms(), 200);
                         (StatusCode::OK, String::from("")) // Return empty if no deploy logs yet
                     }
                 }
             } else {
-                ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/deploy-logs", id), timer.elapsed_ms(), "200");
+                ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/deploy-logs", id), timer.elapsed_ms(), 200);
                 (StatusCode::OK, String::from("")) // No deploy log path configured
             }
         }
         Ok(None) => {
-            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/deploy-logs", id), timer.elapsed_ms(), "404");
+            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/deploy-logs", id), timer.elapsed_ms(), 404);
             (StatusCode::NOT_FOUND, String::from("Build not found"))
         }
         Err(e) => {
             warn!("[{}] Failed to get deploy logs: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/deploy-logs", id), timer.elapsed_ms(), "500");
+            ctx.logger.api_exit(&trace_id, "GET", &format!("/api/builds/{}/deploy-logs", id), timer.elapsed_ms(), 500);
             (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e))
         }
     }

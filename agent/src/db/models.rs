@@ -249,3 +249,84 @@ impl From<String> for BuildStatus {
         s.parse().unwrap_or(BuildStatus::Queued)
     }
 }
+
+// Container status enum
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ContainerStatus {
+    Running,
+    Stopped,
+}
+
+impl std::fmt::Display for ContainerStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ContainerStatus::Running => write!(f, "running"),
+            ContainerStatus::Stopped => write!(f, "stopped"),
+        }
+    }
+}
+
+impl std::str::FromStr for ContainerStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "running" => Ok(ContainerStatus::Running),
+            "stopped" => Ok(ContainerStatus::Stopped),
+            _ => Err(format!("Invalid container status: {}", s)),
+        }
+    }
+}
+
+impl sqlx::Type<sqlx::Sqlite> for ContainerStatus {
+    fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
+        <String as sqlx::Type<sqlx::Sqlite>>::type_info()
+    }
+}
+
+impl<'q> sqlx::Encode<'q, sqlx::Sqlite> for ContainerStatus {
+    fn encode_by_ref(&self, args: &mut Vec<sqlx::sqlite::SqliteArgumentValue<'q>>) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        args.push(sqlx::sqlite::SqliteArgumentValue::Text(
+            std::borrow::Cow::Owned(self.to_string()),
+        ));
+        Ok(sqlx::encode::IsNull::No)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Sqlite> for ContainerStatus {
+    fn decode(value: sqlx::sqlite::SqliteValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
+        let s: String = <String as sqlx::Decode<sqlx::Sqlite>>::decode(value)?;
+        s.parse().map_err(|e: String| Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)) as Box<dyn std::error::Error + Send + Sync>)
+    }
+}
+
+impl From<String> for ContainerStatus {
+    fn from(s: String) -> Self {
+        s.parse().unwrap_or(ContainerStatus::Stopped)
+    }
+}
+
+// Container model
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Container {
+    pub id: i64,
+    pub name: String,
+    pub container_id: Option<String>,
+    pub port: i32,
+    pub image: String,
+    pub env_vars: Option<String>,  // JSON string
+    pub command: Option<String>,
+    #[sqlx(try_from = "String")]
+    pub status: ContainerStatus,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+// Create container request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateContainer {
+    pub name: String,
+    pub image: String,
+    pub env_vars: Option<String>,  // JSON string
+    pub command: Option<String>,
+}

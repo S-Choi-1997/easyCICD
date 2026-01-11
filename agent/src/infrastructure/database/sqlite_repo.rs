@@ -306,3 +306,163 @@ impl SettingsRepository for SqliteSettingsRepository {
         Ok(())
     }
 }
+
+/// SQLite implementation of ContainerRepository
+#[derive(Clone)]
+pub struct SqliteContainerRepository {
+    pool: SqlitePool,
+}
+
+impl SqliteContainerRepository {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl ContainerRepository for SqliteContainerRepository {
+    async fn create(&self, container: CreateContainer) -> Result<Container> {
+        // Allocate port
+        let port = self.allocate_port().await?;
+
+        let result = sqlx::query(
+            r#"
+            INSERT INTO containers (name, port, image, env_vars, command, status)
+            VALUES (?, ?, ?, ?, ?, 'stopped')
+            "#
+        )
+        .bind(&container.name)
+        .bind(port)
+        .bind(&container.image)
+        .bind(&container.env_vars)
+        .bind(&container.command)
+        .execute(&self.pool)
+        .await?;
+
+        let id = result.last_insert_rowid();
+        let container = sqlx::query_as::<_, Container>("SELECT * FROM containers WHERE id = ?")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await?;
+
+        Ok(container)
+    }
+
+    async fn get(&self, id: i64) -> Result<Option<Container>> {
+        let container = sqlx::query_as::<_, Container>("SELECT * FROM containers WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(container)
+    }
+
+    async fn get_by_name(&self, name: &str) -> Result<Option<Container>> {
+        let container = sqlx::query_as::<_, Container>("SELECT * FROM containers WHERE name = ?")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(container)
+    }
+
+    async fn list(&self) -> Result<Vec<Container>> {
+        let containers = sqlx::query_as::<_, Container>(
+            "SELECT * FROM containers ORDER BY created_at DESC"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(containers)
+    }
+
+    async fn update_status(&self, id: i64, status: ContainerStatus) -> Result<()> {
+        sqlx::query("UPDATE containers SET status = ? WHERE id = ?")
+            .bind(status.to_string())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        // Update port_allocations container_status
+        sqlx::query(
+            "UPDATE port_allocations SET container_status = ? WHERE owner_type = 'container' AND owner_id = ?"
+        )
+        .bind(status.to_string())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn update_container_id(&self, id: i64, container_id: Option<String>) -> Result<()> {
+        sqlx::query("UPDATE containers SET container_id = ? WHERE id = ?")
+            .bind(container_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn delete(&self, id: i64) -> Result<()> {
+        // Get port before deleting
+        let container = self.get(id).await?;
+
+        if let Some(c) = container {
+            // Delete container
+            sqlx::query("DELETE FROM containers WHERE id = ?")
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+
+            // Release port
+            self.release_port(c.port).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn allocate_port(&self) -> Result<i32> {
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Get all unavailable ports (allocated or used by system)
+        let unavailable_ports: Vec<i32> = sqlx::query_scalar(
+            r#"
+            SELECT port FROM port_allocations
+            WHERE port_type = 'container'
+            AND status IN ('allocated', 'used_by_system')
+            "#
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Find first available port in range 15000-19999
+        for port in 15000..20000 {
+            if !unavailable_ports.contains(&port) {
+                // Allocate port
+                sqlx::query(
+                    r#"
+                    INSERT INTO port_allocations
+                    (port, port_type, status, owner_type, last_checked_at)
+                    VALUES (?, 'container', 'allocated', 'container', ?)
+                    "#
+                )
+                .bind(port)
+                .bind(&now)
+                .execute(&self.pool)
+                .await?;
+
+                return Ok(port);
+            }
+        }
+
+        anyhow::bail!("No available ports in Container range (15000-19999)")
+    }
+
+    async fn release_port(&self, port: i32) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM port_allocations WHERE port = ? AND owner_type = 'container'"
+        )
+        .bind(port)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use anyhow::Result;
-use crate::db::models::{Project, Build, CreateProject, CreateBuild, Slot, BuildStatus};
+use crate::db::models::{Project, Build, CreateProject, CreateBuild, Slot, BuildStatus, Container, CreateContainer, ContainerStatus};
 
 /// Repository trait for Project operations
 #[async_trait]
@@ -72,4 +72,35 @@ pub trait SettingsRepository: Send + Sync {
 
     /// Delete a setting
     async fn delete(&self, key: &str) -> Result<()>;
+}
+
+/// Repository trait for Container operations
+#[async_trait]
+pub trait ContainerRepository: Send + Sync {
+    /// Create a new container
+    async fn create(&self, container: CreateContainer) -> Result<Container>;
+
+    /// Get a container by ID
+    async fn get(&self, id: i64) -> Result<Option<Container>>;
+
+    /// Get a container by name
+    async fn get_by_name(&self, name: &str) -> Result<Option<Container>>;
+
+    /// List all containers
+    async fn list(&self) -> Result<Vec<Container>>;
+
+    /// Update container status
+    async fn update_status(&self, id: i64, status: ContainerStatus) -> Result<()>;
+
+    /// Update container ID (Docker container ID)
+    async fn update_container_id(&self, id: i64, container_id: Option<String>) -> Result<()>;
+
+    /// Delete a container
+    async fn delete(&self, id: i64) -> Result<()>;
+
+    /// Allocate a port in the container range (15000-19999)
+    async fn allocate_port(&self) -> Result<i32>;
+
+    /// Release a port
+    async fn release_port(&self, port: i32) -> Result<()>;
 }
