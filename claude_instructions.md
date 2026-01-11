@@ -64,27 +64,118 @@
 
 ## 설계 원칙 (중요!)
 
-### 1. 모듈화/인터페이스화 지양
-- **각 기능을 과도하게 분리하지 말 것**
-- 불필요한 추상화 레이어 생성 금지
-- 작은 기능까지 trait으로 분리하면 코드 추적이 어려워짐
-- 응집도 높은 코드를 선호 (관련 로직은 한 곳에)
+### 1. 모듈화/인터페이스화 지향
+- **큰 덩어리 단위로 명확하게 모듈 분리**
+- 각 모듈은 독립적이고 책임이 명확해야 함
+- 모듈 간 의존성은 인터페이스(trait)로 추상화
+- 목적: 코드 추적과 디버깅을 용이하게
 
-### 2. 통합 로깅 중심 설계
-- **모든 정보는 통합 로그에 집중**
-- 로그 하나만 보면 전체 흐름을 파악할 수 있어야 함
-- 각 단계마다 명확한 로그 메시지 출력
+### 2. 통합 로깅 중심 설계 (핵심!)
+- **모든 모듈 간 경계에서 상세한 로그 출력 필수**
+- 통합 로그 하나만 보면 전체 실행 흐름을 파악할 수 있어야 함
+- 각 모듈 진입/종료 시점, 주요 데이터 변환 시점에 로그 출력
 - 로그 레벨: ERROR → WARN → INFO → DEBUG 순으로 활용
-- 예시:
+- 로그 포맷 예시:
   ```
   [PARSE] Detected port from Dockerfile EXPOSE: 8080
   [PARSE] Merged env from GitHub secrets: 3 variables
-  [BUILD] Starting Docker build for project: my-app
+  [BUILD] Starting Docker build for project: my-app (trace_id: abc123)
   [DEPLOY] Blue-Green switch: blue → green
   ```
 
 ### 3. 단일 문서 원칙
-- **한 문서만 보면 시스템 이해 가능하도록**
-- 로그 파일이 곧 실행 가능한 문서
-- 코드를 여러 파일에 나누더라도, 로그는 시간 순서대로 통합
-- 디버깅 시 로그만으로 문제 해결 가능해야 함
+- **Claude가 디버깅 시 로그 파일 하나만 보면 문제 해결 가능하도록**
+- 여러 모듈에 코드가 분산되어 있어도, 로그는 시간 순서대로 통합
+- 각 모듈/파일을 일일이 열어보지 않아도 로그만으로 흐름 추적 가능
+- 로그가 곧 실행 가능한 문서(Living Documentation)
+
+## 로깅 시스템 분석
+
+### 로그 파일 위치 및 역할
+
+#### 1. 애플리케이션 통합 로그 (메인 로그)
+- **위치**: `docker logs easycicd-agent`
+- **역할**: 전체 시스템의 통합 실시간 로그 (stdout/stderr)
+- **내용**:
+  - 모든 API 요청/응답 (trace_id 포함)
+  - 서비스 레이어 호출 흐름
+  - Repository, Docker, GitHub 등 외부 시스템 통신
+  - 이벤트 발행/구독
+  - 에러 및 경고
+- **포맷**: `[timestamp] [LEVEL] [module] [trace_id] [flow] message`
+- **확인 방법**:
+  - 실시간: `docker logs -f easycicd-agent`
+  - 최근 100줄: `docker logs --tail 100 easycicd-agent`
+
+#### 2. 빌드별 개별 로그
+- **위치**: `/data/easycicd/logs/{project_id}/{build_id}.log`
+- **역할**: 각 빌드의 Docker 빌드 과정 상세 로그
+- **내용**:
+  - Dockerfile 실행 단계별 출력
+  - 의존성 설치 로그
+  - 컴파일/빌드 에러
+  - 이미지 레이어 생성 과정
+- **예시**: `/data/easycicd/logs/6/4.log` = 프로젝트 6의 빌드 4번 로그
+
+#### 3. 배포 로그
+- **위치**: `/data/easycicd/logs/{project_id}/{build_id}_deploy.log`
+- **역할**: Blue-Green 배포 과정 상세 로그
+- **내용**:
+  - 컨테이너 시작 로그
+  - Health check 결과
+  - 라우팅 전환 과정
+  - 이전 컨테이너 정리
+- **예시**: `/data/easycicd/logs/6/4_deploy.log` = 프로젝트 6의 빌드 4번 배포 로그
+
+### 로깅 인프라 구성요소
+
+#### BoundaryLogger (핵심 로깅 도구)
+- **파일**: `agent/src/infrastructure/logging/boundary_logger.rs`
+- **역할**: 모든 모듈 경계에서 구조화된 로그 생성
+- **주요 메서드**:
+  - `api_entry()` / `api_exit()` / `api_error()`: API 핸들러 진입/종료
+  - `service_entry()` / `service_exit()` / `service_error()`: 서비스 레이어
+  - `repo_call()` / `repo_done()` / `repo_error()`: Repository 호출
+  - `external_call()` / `external_done()` / `external_error()`: Docker, GitHub 등
+  - `event_emit()`: 이벤트 발행
+- **로그 포맷**: `[{trace_id}] [{from}→{to}] {method} [{stage}] {details}`
+  - 예: `[abc-123] [API→BuildService] execute_build [ENTRY] params={build_id: 42}`
+
+#### TraceContext (요청 추적)
+- **파일**: `agent/src/infrastructure/logging/trace_context.rs`
+- **역할**: HTTP 요청마다 고유 trace_id 생성 및 전파
+- **사용법**:
+  - `TraceContext::extract_or_generate(&headers)`: 헤더에서 추출 또는 생성
+  - `TraceContext::new_trace_id()`: 새 UUID 생성
+- **목적**: 단일 요청의 전체 생명주기를 trace_id로 추적
+
+#### Timer (성능 측정)
+- **파일**: `agent/src/infrastructure/logging/boundary_logger.rs`
+- **역할**: 각 작업의 소요 시간 측정
+- **사용법**:
+  ```rust
+  let timer = Timer::start();
+  // ... 작업 수행 ...
+  logger.api_exit(trace_id, method, path, timer.elapsed_ms(), status);
+  ```
+
+### Claude 디버깅 워크플로우
+
+1. **문제 발생 시 첫 번째 확인**: `docker logs --tail 200 easycicd-agent`
+   - trace_id로 특정 요청의 전체 흐름 추적
+   - `[←FAIL]` 스테이지 검색하여 에러 위치 파악
+   - 모듈 간 호출 순서 및 소요 시간 확인
+
+2. **빌드 실패 시**: `/data/easycicd/logs/{project_id}/{build_id}.log`
+   - Docker 빌드 과정의 상세 에러 메시지 확인
+   - 어느 단계에서 실패했는지 파악
+
+3. **배포 실패 시**: `/data/easycicd/logs/{project_id}/{build_id}_deploy.log`
+   - 컨테이너 시작 에러
+   - Health check 실패 원인
+   - 포트 충돌 등 배포 관련 이슈
+
+4. **로그 검색 팁**:
+   - Trace ID로 검색: `docker logs easycicd-agent 2>&1 | grep "abc-123"`
+   - 에러만 보기: `docker logs easycicd-agent 2>&1 | grep ERROR`
+   - 특정 모듈: `docker logs easycicd-agent 2>&1 | grep "BuildService"`
