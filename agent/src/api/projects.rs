@@ -21,6 +21,8 @@ pub fn projects_routes() -> Router<AppContext> {
         .route("/", get(list_projects).post(create_project))
         .route("/{id}", get(get_project).delete(delete_project))
         .route("/{id}/builds", post(trigger_build))
+        .route("/{id}/rollback/{build_id}", post(rollback_build))
+        .route("/{id}/runtime-logs", get(runtime_logs))
         .route("/{id}/containers/start", post(start_containers))
         .route("/{id}/containers/stop", post(stop_containers))
         .route("/{id}/containers/restart", post(restart_containers))
@@ -556,4 +558,195 @@ async fn restart_containers(
 
     ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/containers/restart", id), timer.elapsed_ms(), 200);
     (StatusCode::OK, Json(serde_json::json!({ "results": results })))
+}
+
+async fn rollback_build(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path((project_id, build_id)): Path<(i64, i64)>,
+) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "POST", &format!("/api/projects/{}/rollback/{}", project_id, build_id), &format!("project_id={}, build_id={}", project_id, build_id));
+
+    // Get project
+    let project = match ctx.project_repo.get(project_id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/rollback/{}", project_id, build_id), timer.elapsed_ms(), 404);
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Project not found"})),
+            )
+        }
+        Err(e) => {
+            warn!("[{}] Failed to get project: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/rollback/{}", project_id, build_id), timer.elapsed_ms(), 500);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            );
+        }
+    };
+
+    // Get target build
+    let target_build = match ctx.build_repo.get(build_id).await {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/rollback/{}", project_id, build_id), timer.elapsed_ms(), 404);
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Build not found"})),
+            )
+        }
+        Err(e) => {
+            warn!("[{}] Failed to get build: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/rollback/{}", project_id, build_id), timer.elapsed_ms(), 500);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            );
+        }
+    };
+
+    // Verify build belongs to project
+    if target_build.project_id != project_id {
+        ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/rollback/{}", project_id, build_id), timer.elapsed_ms(), 400);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Build does not belong to this project"})),
+        );
+    }
+
+    // Execute rollback via DeploymentService
+    match ctx.deployment_service.rollback(&trace_id, &project, &target_build).await {
+        Ok(_) => {
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/rollback/{}", project_id, build_id), timer.elapsed_ms(), 200);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "message": "Rollback completed successfully",
+                    "build_id": build_id,
+                    "build_number": target_build.build_number
+                })),
+            )
+        }
+        Err(e) => {
+            warn!("[{}] Rollback failed: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "POST", &format!("/api/projects/{}/rollback/{}", project_id, build_id), timer.elapsed_ms(), 500);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Rollback failed: {}", e)})),
+            )
+        }
+    }
+}
+
+use axum::extract::ws::{WebSocket, WebSocketUpgrade};
+use axum::response::Response;
+use futures_util::{SinkExt, StreamExt};
+
+async fn runtime_logs(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path(project_id): Path<i64>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+
+    ctx.logger.api_entry(&trace_id, "GET", &format!("/api/projects/{}/runtime-logs", project_id), &format!("project_id={}", project_id));
+
+    ws.on_upgrade(move |socket| runtime_logs_stream(socket, ctx, trace_id, project_id))
+}
+
+async fn runtime_logs_stream(
+    mut socket: WebSocket,
+    ctx: AppContext,
+    trace_id: String,
+    project_id: i64,
+) {
+    info!("[{}] WebSocket connected for runtime logs of project {}", trace_id, project_id);
+
+    // Get project
+    let project = match ctx.project_repo.get(project_id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            let _ = socket.send(axum::extract::ws::Message::Text(
+                serde_json::json!({"error": "Project not found"}).to_string().into()
+            )).await;
+            return;
+        }
+        Err(e) => {
+            warn!("[{}] Failed to get project: {}", trace_id, e);
+            let _ = socket.send(axum::extract::ws::Message::Text(
+                serde_json::json!({"error": "Database error"}).to_string().into()
+            )).await;
+            return;
+        }
+    };
+
+    // Get active container ID
+    let container_id = match project.active_slot {
+        Slot::Blue => project.blue_container_id,
+        Slot::Green => project.green_container_id,
+    };
+
+    let container_id = match container_id {
+        Some(id) => id,
+        None => {
+            let _ = socket.send(axum::extract::ws::Message::Text(
+                serde_json::json!({"error": "No active container"}).to_string().into()
+            )).await;
+            return;
+        }
+    };
+
+    info!("[{}] Streaming logs from container: {}", trace_id, container_id);
+
+    // Stream Docker logs
+    match ctx.docker.stream_container_logs(&container_id).await {
+        Ok(mut stream) => {
+            let (mut ws_sender, mut ws_receiver) = socket.split();
+
+            loop {
+                tokio::select! {
+                    // Docker 로그 수신
+                    log_chunk = stream.next() => {
+                        match log_chunk {
+                            Some(Ok(chunk)) => {
+                                let log_text = String::from_utf8_lossy(&chunk).to_string();
+                                if ws_sender.send(axum::extract::ws::Message::Text(log_text.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Some(Err(e)) => {
+                                warn!("[{}] Error streaming logs: {}", trace_id, e);
+                                break;
+                            }
+                            None => {
+                                info!("[{}] Log stream ended", trace_id);
+                                break;
+                            }
+                        }
+                    }
+                    // WebSocket close 감지
+                    msg = ws_receiver.next() => {
+                        if msg.is_none() {
+                            info!("[{}] WebSocket closed by client", trace_id);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            warn!("[{}] Failed to stream container logs: {}", trace_id, e);
+            let _ = socket.send(axum::extract::ws::Message::Text(
+                serde_json::json!({"error": format!("Failed to stream logs: {}", e)}).to_string().into()
+            )).await;
+        }
+    }
+
+    info!("[{}] Runtime logs stream ended for project {}", trace_id, project_id);
 }

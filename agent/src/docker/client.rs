@@ -602,4 +602,27 @@ impl DockerClient {
             Err(_) => false,
         }
     }
+
+    /// 컨테이너 로그 스트리밍 (실시간 로그)
+    pub async fn stream_container_logs(&self, container_id: &str) -> Result<impl futures_util::Stream<Item = Result<Vec<u8>, bollard::errors::Error>>> {
+        use bollard::container::LogsOptions;
+
+        let options = Some(LogsOptions::<String> {
+            follow: true,
+            stdout: true,
+            stderr: true,
+            tail: "100".to_string(),
+            ..Default::default()
+        });
+
+        let stream = self.docker.logs(container_id, options);
+
+        Ok(stream.map(|result| {
+            result.map(|output| match output {
+                LogOutput::StdOut { message } => message.to_vec(),
+                LogOutput::StdErr { message } => message.to_vec(),
+                _ => Vec::new(),
+            })
+        }))
+    }
 }

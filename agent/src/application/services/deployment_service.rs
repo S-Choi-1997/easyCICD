@@ -389,4 +389,149 @@ where
 
         anyhow::bail!("Health check timed out after {} attempts", max_attempts)
     }
+
+    /// 이전 빌드로 롤백
+    pub async fn rollback(&self, trace_id: &str, project: &Project, target_build: &Build) -> Result<()> {
+        let timer = Timer::start();
+        self.logger.service_entry(trace_id, "API", "DeploymentService", "rollback", &target_build.id);
+
+        info!(
+            "[{}] Rolling back project {} to build #{}",
+            trace_id, project.name, target_build.build_number
+        );
+
+        // 롤백 대상 빌드가 배포되었는지 확인
+        let target_slot = target_build.get_deployed_slot()
+            .context("Target build was never deployed")?;
+
+        // output_path 확인
+        let output_path = target_build.output_path.as_ref()
+            .context("Target build has no output path")?;
+        let output_path_buf = PathBuf::from(output_path);
+
+        if !output_path_buf.exists() {
+            anyhow::bail!("Target build output not found: {}", output_path);
+        }
+
+        info!(
+            "[{}] Target build was deployed to {} slot, output path: {}",
+            trace_id, target_slot, output_path
+        );
+
+        // 현재 활성 슬롯이 아닌 슬롯에 배포
+        let deploy_slot = match project.active_slot {
+            Slot::Blue => Slot::Green,
+            Slot::Green => Slot::Blue,
+        };
+
+        let deploy_port = match deploy_slot {
+            Slot::Blue => project.blue_port as u16,
+            Slot::Green => project.green_port as u16,
+        };
+
+        info!("[{}] Deploying rollback to {} slot on port {}", trace_id, deploy_slot, deploy_port);
+
+        // 기존 컨테이너 정리
+        let old_container_id = match deploy_slot {
+            Slot::Blue => project.blue_container_id.as_ref(),
+            Slot::Green => project.green_container_id.as_ref(),
+        };
+
+        if let Some(old_id) = old_container_id {
+            self.logger.external_call(trace_id, "DeploymentService", "Docker", "stop_container");
+            self.docker.stop_container(old_id).await.ok();
+
+            self.logger.external_call(trace_id, "DeploymentService", "Docker", "remove_container");
+            self.docker.remove_container(old_id).await.ok();
+
+            match deploy_slot {
+                Slot::Blue => {
+                    self.project_repo.update_blue_container(project.id, None).await?;
+                }
+                Slot::Green => {
+                    self.project_repo.update_green_container(project.id, None).await?;
+                }
+            }
+        }
+
+        // 이전 빌드의 컨테이너 시작
+        self.logger.external_call(trace_id, "DeploymentService", "Docker", "run_runtime_container");
+        let container_id = self
+            .docker
+            .run_runtime_container(
+                &project.runtime_image,
+                &project.runtime_command,
+                output_path_buf,
+                deploy_port,
+                project.runtime_port as u16,
+                project.id,
+                &deploy_slot.to_string().to_lowercase(),
+            )
+            .await
+            .context("Failed to start rollback container")?;
+
+        info!("[{}] Rollback container started: {}", trace_id, container_id);
+
+        // 컨테이너 ID 업데이트
+        match deploy_slot {
+            Slot::Blue => {
+                self.project_repo
+                    .update_blue_container(project.id, Some(container_id.clone()))
+                    .await?;
+            }
+            Slot::Green => {
+                self.project_repo
+                    .update_green_container(project.id, Some(container_id.clone()))
+                    .await?;
+            }
+        }
+
+        // Health check
+        self.perform_health_check(trace_id, project, target_build, &container_id).await?;
+
+        info!("[{}] Health check passed, switching to {} slot", trace_id, deploy_slot);
+
+        // 슬롯 전환
+        self.project_repo
+            .update_active_slot(project.id, deploy_slot)
+            .await?;
+
+        // 이전 활성 슬롯 정리
+        let old_slot = project.active_slot;
+        let old_active_container_id = match old_slot {
+            Slot::Blue => project.blue_container_id.clone(),
+            Slot::Green => project.green_container_id.clone(),
+        };
+
+        if let Some(old_id) = old_active_container_id {
+            info!("[{}] Stopping old {} container: {}", trace_id, old_slot, old_id);
+            self.docker.stop_container(&old_id).await.ok();
+            self.docker.remove_container(&old_id).await.ok();
+
+            match old_slot {
+                Slot::Blue => {
+                    self.project_repo.update_blue_container(project.id, None).await?;
+                }
+                Slot::Green => {
+                    self.project_repo.update_green_container(project.id, None).await?;
+                }
+            }
+        }
+
+        self.logger.event_emit(trace_id, "DeploymentService", "Rollback::Success");
+        self.event_bus.emit(Event::Deployment {
+            project_id: project.id,
+            project_name: project.name.clone(),
+            build_id: target_build.id,
+            status: "Rollback Success".to_string(),
+            slot: deploy_slot,
+            url: format!("https://app.yourdomain.com/{}/", project.name),
+            timestamp: Event::now(),
+        }).await;
+
+        info!("[{}] Rollback completed successfully", trace_id);
+        self.logger.service_exit(trace_id, "API", "DeploymentService", "rollback", timer.elapsed_ms());
+
+        Ok(())
+    }
 }
