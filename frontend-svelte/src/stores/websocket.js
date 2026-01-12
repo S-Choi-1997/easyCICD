@@ -28,11 +28,14 @@ export function initWebSocket() {
     ws.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
+            console.log('🔌 [WebSocket RAW] Received message:', data);
             messages.update(msgs => [...msgs, data]);
 
             // 구독자에게 메시지 전달
             subscriptions.update(subs => {
+                console.log('🔌 [WebSocket RAW] Active subscriptions:', subs.size);
                 subs.forEach((callback, key) => {
+                    console.log('🔌 [WebSocket RAW] Calling subscriber:', key);
                     callback(data);
                 });
                 return subs;

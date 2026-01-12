@@ -32,8 +32,15 @@ impl std::str::FromStr for Slot {
 pub enum BuildStatus {
     Queued,
     Building,
-    Deploying,
     Success,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DeploymentStatus {
+    NotDeployed,
+    Deploying,
+    Deployed,
     Failed,
 }
 
@@ -42,7 +49,6 @@ impl std::fmt::Display for BuildStatus {
         match self {
             BuildStatus::Queued => write!(f, "Queued"),
             BuildStatus::Building => write!(f, "Building"),
-            BuildStatus::Deploying => write!(f, "Deploying"),
             BuildStatus::Success => write!(f, "Success"),
             BuildStatus::Failed => write!(f, "Failed"),
         }
@@ -56,11 +62,45 @@ impl std::str::FromStr for BuildStatus {
         match s {
             "Queued" => Ok(BuildStatus::Queued),
             "Building" => Ok(BuildStatus::Building),
-            "Deploying" => Ok(BuildStatus::Deploying),
             "Success" => Ok(BuildStatus::Success),
             "Failed" => Ok(BuildStatus::Failed),
+            // 하위 호환성: 기존 Deploying 상태는 Success로 처리
+            "Deploying" => Ok(BuildStatus::Success),
             _ => Err(format!("Invalid build status: {}", s)),
         }
+    }
+}
+
+impl std::fmt::Display for DeploymentStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeploymentStatus::NotDeployed => write!(f, "NotDeployed"),
+            DeploymentStatus::Deploying => write!(f, "Deploying"),
+            DeploymentStatus::Deployed => write!(f, "Deployed"),
+            DeploymentStatus::Failed => write!(f, "Failed"),
+        }
+    }
+}
+
+impl std::str::FromStr for DeploymentStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "NotDeployed" => Ok(DeploymentStatus::NotDeployed),
+            "Deploying" => Ok(DeploymentStatus::Deploying),
+            "Deployed" => Ok(DeploymentStatus::Deployed),
+            "Failed" => Ok(DeploymentStatus::Failed),
+            _ => Err(format!("Invalid deployment status: {}", s)),
+        }
+    }
+}
+
+impl TryFrom<String> for DeploymentStatus {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
     }
 }
 
@@ -95,6 +135,10 @@ pub struct Project {
     // Container IDs
     pub blue_container_id: Option<String>,
     pub green_container_id: Option<String>,
+
+    // Status
+    #[sqlx(try_from = "String")]
+    pub deployment_status: DeploymentStatus,
 
     // Timestamps
     pub created_at: String,
@@ -312,10 +356,12 @@ pub struct Container {
     pub id: i64,
     pub name: String,
     pub container_id: Option<String>,
-    pub port: i32,
+    pub port: i32,  // Host port (외부 접속 포트)
+    pub container_port: Option<i32>,  // Container port (컨테이너 내부 포트)
     pub image: String,
     pub env_vars: Option<String>,  // JSON string
     pub command: Option<String>,
+    pub persist_data: i64,  // 0 or 1 (boolean)
     #[sqlx(try_from = "String")]
     pub status: ContainerStatus,
     pub created_at: String,
@@ -327,6 +373,8 @@ pub struct Container {
 pub struct CreateContainer {
     pub name: String,
     pub image: String,
+    pub container_port: i32,  // 컨테이너 내부 포트 (필수)
     pub env_vars: Option<String>,  // JSON string
     pub command: Option<String>,
+    pub persist_data: bool,  // 데이터 영구 저장 여부
 }

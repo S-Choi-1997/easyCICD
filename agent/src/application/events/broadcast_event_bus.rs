@@ -36,6 +36,8 @@ impl EventBus for BroadcastEventBus {
             Event::Deployment { .. } => "Deployment",
             Event::HealthCheck { .. } => "HealthCheck",
             Event::ContainerStatus { .. } => "ContainerStatus",
+            Event::StandaloneContainerStatus { .. } => "StandaloneContainerStatus",
+            Event::ContainerLog { .. } => "ContainerLog",
             Event::Error { .. } => "Error",
         };
 

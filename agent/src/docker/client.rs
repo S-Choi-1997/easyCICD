@@ -423,8 +423,10 @@ impl DockerClient {
         name: &str,
         image: &str,
         host_port: i32,
+        container_port: i32,
         env_vars: Option<&str>,
         command: Option<&str>,
+        persist_data: bool,
     ) -> Result<String> {
         self.ensure_image(image).await?;
 
@@ -452,6 +454,19 @@ impl DockerClient {
             vec!["/bin/sh".to_string(), "-c".to_string(), c.to_string()]
         });
 
+        // Setup volume binds if persist_data is enabled
+        let binds: Option<Vec<String>> = if persist_data {
+            // Create data directory if it doesn't exist
+            let data_dir = format!("/data/easycicd/containers/{}/data", name);
+            std::fs::create_dir_all(&data_dir).ok();
+
+            // Mount to /data in container
+            info!("Mounting persistent data: {} -> /data", data_dir);
+            Some(vec![format!("{}:/data", data_dir)])
+        } else {
+            None
+        };
+
         let config = Config {
             image: Some(image.to_string()),
             cmd,
@@ -459,10 +474,10 @@ impl DockerClient {
             host_config: Some(bollard::models::HostConfig {
                 port_bindings: Some({
                     let mut port_bindings = HashMap::new();
-                    // Map container's default port to host port
-                    // Most images expose their service port, we'll just bind to host
+                    // Map host_port:container_port
+                    info!("Port mapping: {}:{}", host_port, container_port);
                     port_bindings.insert(
-                        format!("{}/tcp", host_port),
+                        format!("{}/tcp", container_port),
                         Some(vec![bollard::models::PortBinding {
                             host_ip: Some("0.0.0.0".to_string()),
                             host_port: Some(host_port.to_string()),
@@ -470,6 +485,7 @@ impl DockerClient {
                     );
                     port_bindings
                 }),
+                binds,
                 publish_all_ports: Some(true),
                 restart_policy: Some(bollard::models::RestartPolicy {
                     name: Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED),
@@ -555,6 +571,42 @@ impl DockerClient {
             .await
             .ok();
         Ok(())
+    }
+
+    /// Get container logs
+    pub async fn get_container_logs(&self, container_id: &str, tail: Option<usize>) -> Result<Vec<String>> {
+        use bollard::container::LogsOptions;
+
+        let options = LogsOptions::<String> {
+            stdout: true,
+            stderr: true,
+            tail: tail.unwrap_or(100).to_string(),
+            timestamps: true,
+            ..Default::default()
+        };
+
+        let mut logs = self.docker.logs(container_id, Some(options));
+        let mut result = Vec::new();
+
+        while let Some(log) = logs.next().await {
+            match log {
+                Ok(output) => {
+                    let line = match output {
+                        LogOutput::StdOut { message } | LogOutput::StdErr { message } => {
+                            String::from_utf8_lossy(&message).to_string()
+                        }
+                        _ => continue,
+                    };
+                    result.push(line);
+                }
+                Err(e) => {
+                    warn!("Error reading container logs: {}", e);
+                    break;
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     /// Restart container

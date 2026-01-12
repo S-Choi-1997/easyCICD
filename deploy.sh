@@ -1,46 +1,43 @@
 #!/bin/bash
 
-set -e  # Exit on error
+set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+echo "🚀 EasyCI/CD 배포 스크립트"
+echo "=========================="
 
-echo "=== Easy CI/CD Deployment Script ==="
+# 1. 프론트엔드 빌드
 echo ""
-
-# Step 1: Build frontend
-echo "[1/5] Building frontend..."
+echo "📦 [1/4] 프론트엔드 빌드 중..."
 cd frontend-svelte
-npm run build
+npm run build 2>&1 | grep -v "vite-plugin-svelte" || true
 cd ..
-echo "✓ Frontend build complete"
-echo ""
 
-# Step 2: Build Docker image
-echo "[2/5] Building Docker image..."
-docker build -t choho97/lightweight-ci:latest -f agent/Dockerfile .
-echo "✓ Docker build complete"
+# 2. Docker 이미지 빌드
 echo ""
+echo "🐳 [2/4] Docker 이미지 빌드 중..."
+cd agent
+docker build -t choho97/lightweight-ci:latest .
+cd ..
 
-# Step 3: Push to Docker Hub
-echo "[3/5] Pushing image to Docker Hub..."
-docker push choho97/lightweight-ci:latest
-echo "✓ Push complete"
+# 3. Docker Hub에 비동기 푸시 (백그라운드)
 echo ""
+echo "📤 [3/4] Docker Hub에 푸시 중 (백그라운드)..."
+(docker push choho97/lightweight-ci:latest > /tmp/docker-push.log 2>&1 && echo "✅ Docker Hub 푸시 완료" || echo "❌ Docker Hub 푸시 실패") &
 
-# Step 4: Pull latest image
-echo "[4/5] Pulling latest image..."
-docker pull choho97/lightweight-ci:latest
-echo "✓ Pull complete"
+# 4. 컨테이너 재시작
 echo ""
-
-# Step 5: Restart containers
-echo "[5/5] Restarting containers..."
+echo "🔄 [4/4] 컨테이너 재시작 중..."
 docker compose down
 docker compose up -d
-echo "✓ Containers restarted"
-echo ""
 
-echo "=== Deployment Complete ==="
-echo "Checking container status..."
-docker ps --filter "name=easycicd-agent"
+echo ""
+echo "✅ 배포 완료!"
+echo ""
+echo "접속 정보:"
+echo "- Web UI: http://localhost:10000"
+echo "- Proxy:  http://localhost:9999"
+echo ""
+echo "💡 Docker Hub 푸시는 백그라운드에서 진행 중입니다."
+echo "   상태 확인: tail -f /tmp/docker-push.log"
+echo ""
+echo "로그 확인: docker logs -f easycicd-agent"

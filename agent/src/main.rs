@@ -46,7 +46,13 @@ async fn main() -> Result<()> {
     // Initialize database
     let database_url = "sqlite:///data/easycicd/db.sqlite";
     info!("Connecting to database: {}", database_url);
-    let pool = SqlitePool::connect(database_url).await?;
+
+    use sqlx::sqlite::SqliteConnectOptions;
+    use std::str::FromStr;
+
+    let options = SqliteConnectOptions::from_str(database_url)?
+        .create_if_missing(true);
+    let pool = SqlitePool::connect_with(options).await?;
 
     info!("Running database migrations");
     sqlx::migrate!("./migrations").run(&pool).await?;
@@ -159,6 +165,16 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Start Container Log Streamer worker
+    let container_log_streamer = tokio::spawn({
+        let context = context.clone();
+        async move {
+            if let Err(e) = workers::run_container_log_streamer(context).await {
+                tracing::error!("Container log streamer error: {}", e);
+            }
+        }
+    });
+
     info!("All services started successfully");
 
     // Keep the application running
@@ -180,6 +196,9 @@ async fn main() -> Result<()> {
         }
         _ = port_scanner => {
             info!("Port scanner stopped");
+        }
+        _ = container_log_streamer => {
+            info!("Container log streamer stopped");
         }
     }
 
@@ -230,9 +249,18 @@ async fn synchronize_container_states(context: &AppContext, docker: &DockerClien
         }
     }
 
-    // Step 2: Clean up orphan containers (containers without projects in DB)
+    // Step 2: Get standalone containers from DB
+    use crate::application::ports::repositories::ContainerRepository;
+    let db_containers: Vec<crate::db::models::Container> = context.container_repo.list().await?;
+
+    // Build set of valid container names
+    let valid_container_names: std::collections::HashSet<String> = db_containers.iter()
+        .map(|c| c.name.clone())
+        .collect();
+
+    // Step 3: Clean up orphan containers (containers not in DB)
     #[allow(deprecated)]
-    let containers = docker.docker_api()
+    let all_containers = docker.docker_api()
         .list_containers(Some(bollard::container::ListContainersOptions::<String> {
             all: true,
             ..Default::default()
@@ -244,29 +272,35 @@ async fn synchronize_container_states(context: &AppContext, docker: &DockerClien
         .map(|p| p.id)
         .collect();
 
-    for container in containers {
+    for container in all_containers {
         if let Some(names) = container.names {
             for name in names {
-                // Container name format: /project-{id}-{slot}
-                // Strict matching: must be exactly "project-{number}-{blue|green}"
                 let name = name.trim_start_matches('/');
 
-                // Parse container name with strict format check
+                // Check project containers: project-{id}-{slot}
                 let parts: Vec<&str> = name.split('-').collect();
                 if parts.len() == 3 && parts[0] == "project" {
-                    // Check if second part is a number (project ID)
                     if let Ok(project_id) = parts[1].parse::<i64>() {
-                        // Check if third part is valid slot name
                         if parts[2] == "blue" || parts[2] == "green" {
-                            // Valid project container format - check if orphan
+                            // Valid project container - check if orphan
                             if !valid_project_ids.contains(&project_id) {
-                                // Orphan container found - remove it
                                 if let Some(container_id) = &container.id {
-                                    info!("🧹 Cleaning up orphan container: {} (project ID {} not in DB)", name, project_id);
+                                    info!("🧹 Cleaning up orphan project container: {} (project ID {} not in DB)", name, project_id);
                                     docker.stop_container(container_id).await.ok();
                                     docker.remove_container(container_id).await.ok();
                                 }
                             }
+                        }
+                    }
+                }
+                // Check standalone containers: container-{name}
+                else if parts.len() >= 2 && parts[0] == "container" {
+                    let container_name = parts[1..].join("-");
+                    if !valid_container_names.contains(&container_name) {
+                        if let Some(container_id) = &container.id {
+                            info!("🧹 Cleaning up orphan standalone container: {} (name '{}' not in DB)", name, container_name);
+                            docker.stop_container(container_id).await.ok();
+                            docker.remove_container(container_id).await.ok();
                         }
                     }
                 }

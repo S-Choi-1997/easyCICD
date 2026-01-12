@@ -18,14 +18,17 @@ pub fn containers_routes() -> Router<AppContext> {
         .route("/{id}", get(get_container).delete(delete_container))
         .route("/{id}/start", post(start_container))
         .route("/{id}/stop", post(stop_container))
+        .route("/{id}/logs", get(get_logs))
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateContainerRequest {
     pub name: String,
     pub image: String,
+    pub container_port: i32,
     pub env_vars: Option<serde_json::Value>,
     pub command: Option<String>,
+    pub persist_data: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -34,9 +37,11 @@ pub struct ContainerResponse {
     pub name: String,
     pub container_id: Option<String>,
     pub port: i32,
+    pub container_port: Option<i32>,
     pub image: String,
     pub env_vars: Option<serde_json::Value>,
     pub command: Option<String>,
+    pub persist_data: bool,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
@@ -49,9 +54,11 @@ impl From<crate::db::models::Container> for ContainerResponse {
             name: c.name,
             container_id: c.container_id,
             port: c.port,
+            container_port: c.container_port,
             image: c.image,
             env_vars: c.env_vars.and_then(|s| serde_json::from_str(&s).ok()),
             command: c.command,
+            persist_data: c.persist_data != 0,
             status: c.status.to_string(),
             created_at: c.created_at,
             updated_at: c.updated_at,
@@ -95,8 +102,10 @@ async fn create_container(
     let create_req = CreateContainer {
         name: req.name,
         image: req.image,
+        container_port: req.container_port,
         env_vars: req.env_vars.map(|v| v.to_string()),
         command: req.command,
+        persist_data: req.persist_data.unwrap_or(false),
     };
 
     match ctx.container_service.create_container(&trace_id, create_req).await {
@@ -207,6 +216,29 @@ async fn stop_container(
         Err(e) => {
             error!("[{}] Failed to stop container: {}", trace_id, e);
             ctx.logger.api_exit(&trace_id, "POST", "/api/containers/:id/stop", timer.elapsed_ms(), 500);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
+        }
+    }
+}
+
+/// GET /api/containers/:id/logs
+async fn get_logs(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+    ctx.logger.api_entry(&trace_id, "GET", "/api/containers/:id/logs", &id.to_string());
+
+    match ctx.container_service.get_logs(&trace_id, id, Some(200)).await {
+        Ok(logs) => {
+            ctx.logger.api_exit(&trace_id, "GET", "/api/containers/:id/logs", timer.elapsed_ms(), 200);
+            (StatusCode::OK, Json(serde_json::json!({"logs": logs}))).into_response()
+        }
+        Err(e) => {
+            error!("[{}] Failed to get container logs: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "GET", "/api/containers/:id/logs", timer.elapsed_ms(), 500);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
         }
     }

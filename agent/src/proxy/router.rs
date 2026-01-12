@@ -11,9 +11,9 @@ use tokio::net::TcpListener;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::db::models::Slot;
+use crate::db::models::{Slot, ContainerStatus};
 use crate::state::AppContext;
-use crate::application::ports::repositories::ProjectRepository;
+use crate::application::ports::repositories::{ProjectRepository, ContainerRepository};
 use crate::infrastructure::logging::{TraceContext, Timer};
 
 // Helper to create error responses safely
@@ -76,79 +76,138 @@ async fn handle_request(
     let host_header = headers.get("host").and_then(|h| h.to_str().ok()).unwrap_or("no-host");
     ctx.logger.api_entry(&trace_id, method.as_str(), &format!("PROXY {}", path), &format!("Host: {}", host_header));
 
-    // Parse project name from path (/{project_name}/...) for fallback
+    // Parse name from path (/{name}/...) for fallback
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
 
-    // Determine project name and routing mode
-    let (project_name, is_subdomain_routing) = if let Some(host) = headers.get("host") {
+    // Routing result: either Project or Container
+    enum RouteTarget {
+        Project { name: String, is_subdomain: bool },
+        Container { name: String, is_subdomain: bool },
+    }
+
+    // Determine routing target based on Host header and subdomain pattern
+    let route_target = if let Some(host) = headers.get("host") {
         if let Ok(host_str) = host.to_str() {
-            // Extract hostname without port: projectname-app.albl.cloud:9999 -> projectname-app.albl.cloud
+            // Extract hostname without port: name.albl.cloud:9999 -> name.albl.cloud
             let hostname = host_str.split(':').next().unwrap_or(host_str);
 
             // Check if subdomain routing should be used
             if let Some(ref base_domain) = ctx.base_domain {
-                // Build the pattern to match: -app.{base_domain}
-                let app_suffix = format!("-app.{}", base_domain);
+                let domain_suffix = format!(".{}", base_domain);
 
-                if hostname.ends_with(&app_suffix) {
-                    // Extract project name: projectname-app.albl.cloud -> projectname
-                    let project_name = hostname.trim_end_matches(&app_suffix);
-                    info!("Subdomain routing: {} -> project '{}'", hostname, project_name);
-                    (project_name.to_string(), true)
+                if hostname.ends_with(&domain_suffix) {
+                    let subdomain = hostname.trim_end_matches(&domain_suffix);
+
+                    // Check for project pattern: {name}-app
+                    if subdomain.ends_with("-app") {
+                        let project_name = subdomain.trim_end_matches("-app");
+                        info!("Subdomain routing: {} -> project '{}'", hostname, project_name);
+                        RouteTarget::Project { name: project_name.to_string(), is_subdomain: true }
+                    } else {
+                        // Standalone container pattern: {name}
+                        info!("Subdomain routing: {} -> container '{}'", hostname, subdomain);
+                        RouteTarget::Container { name: subdomain.to_string(), is_subdomain: true }
+                    }
                 } else {
                     // Fallback to path-based routing
                     if parts.is_empty() || parts[0].is_empty() {
                         return error_response(StatusCode::NOT_FOUND, "Not found");
                     }
-                    (parts[0].to_string(), false)
+                    // Assume path-based is for projects
+                    RouteTarget::Project { name: parts[0].to_string(), is_subdomain: false }
                 }
             } else {
                 // No base_domain set, use path-based routing
                 if parts.is_empty() || parts[0].is_empty() {
                     return error_response(StatusCode::NOT_FOUND, "Not found");
                 }
-                (parts[0].to_string(), false)
+                RouteTarget::Project { name: parts[0].to_string(), is_subdomain: false }
             }
         } else {
             // Cannot parse host header, fallback to path-based
             if parts.is_empty() || parts[0].is_empty() {
                 return error_response(StatusCode::NOT_FOUND, "Not found");
             }
-            (parts[0].to_string(), false)
+            RouteTarget::Project { name: parts[0].to_string(), is_subdomain: false }
         }
     } else {
         // No host header, fallback to path-based
         if parts.is_empty() || parts[0].is_empty() {
             return error_response(StatusCode::NOT_FOUND, "Not found");
         }
-        (parts[0].to_string(), false)
+        RouteTarget::Project { name: parts[0].to_string(), is_subdomain: false }
     };
 
-    // Get project from database
-    info!("[{}] Routing request → project: '{}'", trace_id, project_name);
-    ctx.logger.repo_call(&trace_id, "Proxy", "ProjectRepo", "get_by_name");
+    // Route to target (either project or standalone container)
+    let (target_container_name, target_port, is_subdomain_routing) = match route_target {
+        RouteTarget::Project { name: project_name, is_subdomain } => {
+            // Get project from database
+            info!("[{}] Routing request → project: '{}'", trace_id, project_name);
+            ctx.logger.repo_call(&trace_id, "Proxy", "ProjectRepo", "get_by_name");
 
-    let project = match ctx.project_repo.get_by_name(&project_name).await {
-        Ok(Some(p)) => {
-            info!("[{}] Project found: id={}, active_slot={:?}, runtime_port={}", trace_id, p.id, p.active_slot, p.runtime_port);
-            p
-        }
-        Ok(None) => {
-            warn!("[{}] Project not found: {}", trace_id, project_name);
-            ctx.logger.api_exit(&trace_id, method.as_str(), &format!("PROXY {}", path), timer.elapsed_ms(), 404);
-            return error_response(StatusCode::NOT_FOUND, "Project not found");
-        }
-        Err(e) => {
-            warn!("[{}] Failed to get project {}: {}", trace_id, project_name, e);
-            ctx.logger.api_exit(&trace_id, method.as_str(), &format!("PROXY {}", path), timer.elapsed_ms(), 500);
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error");
-        }
-    };
+            let project = match ctx.project_repo.get_by_name(&project_name).await {
+                Ok(Some(p)) => {
+                    info!("[{}] Project found: id={}, active_slot={:?}, runtime_port={}", trace_id, p.id, p.active_slot, p.runtime_port);
+                    p
+                }
+                Ok(None) => {
+                    warn!("[{}] Project not found: {}", trace_id, project_name);
+                    ctx.logger.api_exit(&trace_id, method.as_str(), &format!("PROXY {}", path), timer.elapsed_ms(), 404);
+                    return error_response(StatusCode::NOT_FOUND, "Project not found");
+                }
+                Err(e) => {
+                    warn!("[{}] Failed to get project {}: {}", trace_id, project_name, e);
+                    ctx.logger.api_exit(&trace_id, method.as_str(), &format!("PROXY {}", path), timer.elapsed_ms(), 500);
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error");
+                }
+            };
 
-    // Determine container name and internal port based on active slot
-    let (container_name, runtime_port) = match project.active_slot {
-        Slot::Blue => (format!("project-{}-blue", project.id), project.runtime_port),
-        Slot::Green => (format!("project-{}-green", project.id), project.runtime_port),
+            // Determine container name and internal port based on active slot
+            let container_name = match project.active_slot {
+                Slot::Blue => format!("project-{}-blue", project.id),
+                Slot::Green => format!("project-{}-green", project.id),
+            };
+
+            (container_name, project.runtime_port, is_subdomain)
+        }
+
+        RouteTarget::Container { name: container_name, is_subdomain } => {
+            // Get standalone container from database
+            info!("[{}] Routing request → container: '{}'", trace_id, container_name);
+            ctx.logger.repo_call(&trace_id, "Proxy", "ContainerRepo", "get_by_name");
+
+            let container = match ctx.container_repo.get_by_name(&container_name).await {
+                Ok(Some(c)) => {
+                    info!("[{}] Container found: id={}, status={:?}, port={}", trace_id, c.id, c.status, c.port);
+                    c
+                }
+                Ok(None) => {
+                    warn!("[{}] Container not found: {}", trace_id, container_name);
+                    ctx.logger.api_exit(&trace_id, method.as_str(), &format!("PROXY {}", path), timer.elapsed_ms(), 404);
+                    return error_response(StatusCode::NOT_FOUND, "Container not found");
+                }
+                Err(e) => {
+                    warn!("[{}] Failed to get container {}: {}", trace_id, container_name, e);
+                    ctx.logger.api_exit(&trace_id, method.as_str(), &format!("PROXY {}", path), timer.elapsed_ms(), 500);
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal error");
+                }
+            };
+
+            // Check if container is running
+            if container.status != ContainerStatus::Running {
+                warn!("[{}] Container {} is not running (status: {:?})", trace_id, container_name, container.status);
+                ctx.logger.api_exit(&trace_id, method.as_str(), &format!("PROXY {}", path), timer.elapsed_ms(), 503);
+                return error_response(StatusCode::SERVICE_UNAVAILABLE, "Container is not running");
+            }
+
+            // Use the actual Docker container name format: container-{name}
+            let docker_container_name = format!("container-{}", container.name);
+
+            // Use container_port if specified, otherwise use port
+            let target_port = container.container_port.unwrap_or(container.port);
+
+            (docker_container_name, target_port, is_subdomain)
+        }
     };
 
     // Determine target path based on routing mode
@@ -166,9 +225,9 @@ async fn handle_request(
 
     // Preserve query string - route directly to container by name on the same Docker network
     let target_uri = if let Some(query) = req.uri().query() {
-        format!("http://{}:{}{}?{}", container_name, runtime_port, target_path, query)
+        format!("http://{}:{}{}?{}", target_container_name, target_port, target_path, query)
     } else {
-        format!("http://{}:{}{}", container_name, runtime_port, target_path)
+        format!("http://{}:{}{}", target_container_name, target_port, target_path)
     };
 
     info!(

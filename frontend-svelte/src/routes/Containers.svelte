@@ -134,20 +134,20 @@
 
   function getStatusClass(status) {
     switch (status) {
-      case 'Running': return 'running';
-      case 'Stopped': return 'stopped';
-      case 'Created': return 'created';
-      case 'Error': return 'error';
+      case 'running': return 'running';
+      case 'stopped': return 'stopped';
+      case 'created': return 'created';
+      case 'error': return 'error';
       default: return 'unknown';
     }
   }
 
   function getStatusText(status) {
     switch (status) {
-      case 'Running': return '실행 중';
-      case 'Stopped': return '중지됨';
-      case 'Created': return '생성됨';
-      case 'Error': return '오류';
+      case 'running': return '실행 중';
+      case 'stopped': return '중지됨';
+      case 'created': return '생성됨';
+      case 'error': return '오류';
       default: return '알 수 없음';
     }
   }
@@ -214,7 +214,7 @@
             </div>
 
             <div class="container-actions">
-              {#if container.status === 'Running'}
+              {#if container.status === 'running'}
                 <button on:click={() => stopContainer(container.id)} class="btn btn-warning btn-sm">
                   ■ 중지
                 </button>
@@ -226,8 +226,8 @@
               <button
                 on:click={() => deleteContainer(container.id, container.name)}
                 class="btn btn-danger btn-sm"
-                disabled={container.status === 'Running'}
-                title={container.status === 'Running' ? '실행 중인 컨테이너는 삭제할 수 없습니다' : ''}
+                disabled={container.status === 'running'}
+                title={container.status === 'running' ? '실행 중인 컨테이너는 삭제할 수 없습니다' : ''}
               >
                 🗑️ 삭제
               </button>

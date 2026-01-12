@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS projects (
     blue_container_id TEXT,
     green_container_id TEXT,
 
+    -- Deployment status
+    deployment_status TEXT NOT NULL DEFAULT 'NotDeployed',
+
     -- Timestamps
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -50,11 +53,12 @@ CREATE TABLE IF NOT EXISTS builds (
     author TEXT,
 
     -- Build status
-    status TEXT NOT NULL CHECK(status IN ('Queued', 'Building', 'Deploying', 'Success', 'Failed')) DEFAULT 'Queued',
+    status TEXT NOT NULL CHECK(status IN ('Queued', 'Building', 'Success', 'Failed')) DEFAULT 'Queued',
 
     -- Paths
     log_path TEXT NOT NULL,
     output_path TEXT,
+    deploy_log_path TEXT,
 
     -- Deployment info
     deployed_slot TEXT CHECK(deployed_slot IN ('Blue', 'Green')),
@@ -85,6 +89,8 @@ CREATE TABLE IF NOT EXISTS containers (
     name TEXT NOT NULL UNIQUE,
     container_id TEXT,
     port INTEGER NOT NULL,
+    container_port INTEGER,
+    persist_data INTEGER NOT NULL DEFAULT 0,
     image TEXT NOT NULL,
     env_vars TEXT,
     command TEXT,

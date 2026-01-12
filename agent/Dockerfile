@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy manifests
-COPY agent/Cargo.toml ./
+COPY Cargo.toml ./
 
 # Create dummy main to cache dependencies
 RUN mkdir -p src && \
@@ -19,8 +19,8 @@ RUN mkdir -p src && \
     rm -rf src
 
 # Copy actual source code
-COPY agent/src ./src
-COPY agent/migrations ./migrations
+COPY src ./src
+COPY migrations ./migrations
 
 # Build the actual binary
 RUN touch src/main.rs && cargo build --release

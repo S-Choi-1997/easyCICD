@@ -1,77 +1,121 @@
-================================================================================
-배포 환경 오류 및 해결 - 최종 정리
-================================================================================
+=====
+오답노트 작성 규칙
+=====
 
-❌ 문제 1: SQLite 데이터베이스 파일 생성 실패
---------------------------------------------------------------------------------
-원인: SQLx는 기본적으로 데이터베이스 파일이 없으면 자동 생성하지 않음
-에러: error returned from database: (code: 14) unable to open database file
+1. 순수 텍스트만 사용
+   - 마크다운 문법 사용 금지 (**, `, ##, 이모지 등)
+   - 코드 블록 사용 금지, 들여쓰기로만 표시
+   - 목록 표시는 - 또는 숫자. 사용
+
+2. 구조는 간결하게
+   - 문제: 무슨 증상이 발생했는가
+   - 원인: 왜 발생했는가  
+   - 해결: 어떻게 고쳤는가
+   - 교훈: 다시 안 겪으려면 무엇을 기억할 것인가
+
+3. 설명은 핵심만
+   - 불필요한 배경 설명 제거
+   - 코드는 핵심 부분만
+   - 프로세스 흐름은 간결하게 유지
+
+4. 코드 표기
+   - 파일 경로: agent/src/main.rs:252
+   - 명령어: docker compose down
+   - 변수/함수: synchronize_container_states()
+   - 에러: "migration 2 was previously applied"
+
+5. 제목 표기
+   - 구분선: ===== (5자)
+   - 문제 번호: 문제 X: 간결한 제목
+
+
+=====
+문제 1: SQLite DB 파일 생성 실패
+=====
+
+문제: error returned from database: (code: 14) unable to open database file
+원인: SQLx 기본값으로는 DB 파일 자동 생성 안함
 해결: SqliteConnectOptions::create_if_missing(true) 추가
-코드: agent/src/db/queries.rs:12-14
+파일: agent/src/db/queries.rs:12-14
+교훈: SQLite 연결 시 create_if_missing 옵션 필수
 
-❌ 문제 2: 데이터베이스 경로 충돌
---------------------------------------------------------------------------------
-원인: /data/db/ 디렉토리와 /data/db.sqlite 파일명 충돌
-시도1: /data/db.sqlite → 실패 (기존 /data/db/ 디렉토리와 충돌)
-시도2: /data/db/easycicd.db → 실패 (디렉토리 구조 혼란)
-해결: 전용 디렉토리 생성 /data/easycicd/db.sqlite
-추가: main.rs에 std::fs::create_dir_all("/data/easycicd") 추가
+=====
+문제 2: DB 경로 충돌
+=====
 
-❌ 문제 3: Axum 0.7 라우팅 문법 변경
---------------------------------------------------------------------------------
-원인: Axum이 0.7에서 경로 파라미터 문법 변경
-에러: Path segments must not start with `:`. For capture groups, use `{capture}`
+문제: /data/db/ 디렉토리와 /data/db.sqlite 파일명 충돌
+원인: 동일 이름으로 디렉토리와 파일 동시 사용 불가
+시도:
+  - /data/db.sqlite → 실패 (기존 디렉토리와 충돌)
+  - /data/db/easycicd.db → 실패 (구조 혼란)
+해결: 전용 디렉토리 /data/easycicd/db.sqlite 생성
+교훈: DB 파일은 전용 디렉토리 안에 배치
+
+=====
+문제 3: Axum 0.7 라우팅 문법 변경
+=====
+
+문제: Path segments must not start with `:`. For capture groups, use `{capture}`
+원인: Axum 0.7에서 경로 파라미터 문법 변경
 해결: :id → {id} 변경
 파일: agent/src/api/projects.rs:20-21, agent/src/api/builds.rs:16
+교훈: 메이저 버전 업그레이드 시 Breaking Changes 확인
 
-❌ 문제 4: Axum 0.7 정적 파일 서빙 변경
---------------------------------------------------------------------------------
+=====
+문제 4: Axum 0.7 정적 파일 서빙 변경
+=====
+
+문제: Nesting at the root is no longer supported
 원인: Axum 0.7에서 루트 경로 nest_service 금지
-에러: Nesting at the root is no longer supported. Use fallback_service instead
 해결: .nest_service("/", ...) → .fallback_service(...)
 파일: agent/src/main.rs:71
+교훈: Axum 0.7 라우팅 API 변경사항 확인
 
-❌ 문제 5: GLIBC 버전 불일치
---------------------------------------------------------------------------------
-원인: 빌드 단계(Trixie)와 런타임 단계(Bookworm)의 GLIBC 버전 차이
-에러: /lib/x86_64-linux-gnu/libc.so.6: version 'GLIBC_2.39' not found
+=====
+문제 5: GLIBC 버전 불일치
+=====
+
+문제: version 'GLIBC_2.39' not found
+원인: 빌드(Trixie)와 런타임(Bookworm) GLIBC 버전 차이
 해결: 런타임 베이스 이미지를 debian:trixie-slim으로 변경
 파일: agent/Dockerfile:29
+교훈: 멀티스테이지 빌드 시 GLIBC 버전 통일
 
-❌ 문제 6: 정적 파일 경로 오류
---------------------------------------------------------------------------------
-원인: 작업 디렉토리가 /app인데 ../frontend 참조 시 /frontend가 됨
-실제: /app/frontend 디렉토리가 볼륨 마운트됨
-해결: "../frontend" → "frontend" 변경
+=====
+문제 6: 정적 파일 경로 오류
+=====
+
+문제: ../frontend 참조 시 /frontend가 됨
+원인: 작업 디렉토리 /app인데 상대 경로 계산 오류
+해결: "../frontend" → "frontend"
 파일: agent/src/main.rs:71
+교훈: Docker 컨테이너 내 작업 디렉토리 기준 경로 확인
 
-❌ 문제 7: nginx 설정 - daemon directive 중복
---------------------------------------------------------------------------------
-원인: nginx.conf에 "daemon off;" 포함, runtime_command에도 "-g 'daemon off;'" 포함
-에러: nginx: [emerg] "daemon" directive is duplicate in /app/nginx.conf:1
-영향: Runtime 컨테이너가 계속 재시작하며 헬스체크 실패
-해결:
-  1. nginx.conf에만 "daemon off;" 유지
-  2. runtime_command에서 "-g 'daemon off;'" 제거
-  3. detector.rs의 모든 nginx 관련 설정 수정
+=====
+문제 7: nginx daemon directive 중복
+=====
+
+문제: nginx: [emerg] "daemon" directive is duplicate, Runtime 컨테이너 계속 재시작
+원인: nginx.conf에 "daemon off;" + runtime_command에도 "-g 'daemon off;'" 중복
+해결: nginx.conf에만 유지, runtime_command에서 제거
 파일:
   - agent/src/github/detector.rs:125 (Node.js Frontend)
   - agent/src/github/detector.rs:224 (Static Site)
-  - agent/src/github/detector.rs:425 (기존에 수정된 곳)
+  - agent/src/github/detector.rs:425
+교훈: nginx 설정을 파일과 CLI 양쪽에서 중복 지정 금지
 
-❌ 문제 8: Docker 네트워크 통신 실패 - localhost 사용
---------------------------------------------------------------------------------
-원인: Agent와 Runtime 컨테이너가 서로 다른 네트워크 관점에서 localhost 사용
-배경:
-  - Agent 컨테이너: easycicd_easycicd 네트워크 (gateway: 172.19.0.1)
-  - Runtime 컨테이너: 처음에는 별도 네트워크
-  - 헬스체크/프록시에서 localhost 사용 시 자기 자신을 가리킴
+=====
+문제 8: Docker 네트워크 - localhost 통신 실패
+=====
 
 문제 8-1: 헬스체크 실패
-에러: Health check failed - error sending request for url (http://localhost:10001/health)
-원인: Agent가 localhost:10001 호출 시 자기 자신을 가리킴
-시도1: 172.17.0.1 사용 → 실패 (bridge 네트워크, agent는 easycicd 네트워크)
-시도2: host 네트워크 모드 → 실패 (포트 바인딩 안됨)
+
+문제: Health check failed - error sending request for url (http://localhost:10001/health)
+원인: Agent가 localhost:10001 호출 시 자기 자신 가리킨함
+배경: Agent와 Runtime 컨테이너가 서로 다른 네트워크
+시도:
+  - 172.17.0.1 사용 → 실패 (bridge 네트워크, agent는 easycicd)
+  - host 네트워크 모드 → 실패 (포트 바인딩 안됨)
 해결:
   1. Runtime 컨테이너를 easycicd_easycicd 네트워크에 연결
   2. Gateway IP (172.19.0.1) 자동 감지
@@ -82,1227 +126,424 @@
   - agent/src/build/deployer.rs:226-227 (헬스체크 URL)
 
 문제 8-2: 프록시 연결 실패
-에러: Failed to proxy request: error sending request for url (http://localhost:10001/)
-원인: Reverse proxy에서 localhost:10001 호출 시 자기 자신을 가리킴
+
+문제: Failed to proxy request for url (http://localhost:10001/)
+원인: Reverse proxy에서 localhost:10001 호출 시 자기 자신 가리킴
 해결:
   1. AppState에 gateway_ip 필드 추가
   2. main.rs에서 DockerClient 초기화 후 gateway_ip 추출
   3. 프록시 라우터에서 gateway_ip 사용
 파일:
-  - agent/src/state.rs:16 (gateway_ip 필드 추가)
-  - agent/src/state.rs:20 (생성자 파라미터 추가)
+  - agent/src/state.rs:16 (gateway_ip 필드)
   - agent/src/main.rs:63-64 (DockerClient 초기화)
   - agent/src/proxy/router.rs:89-92 (gateway_ip 사용)
 
-네트워크 구조 이해:
-  - Cloudflare Tunnel → 172.17.0.1:9999 (또는 172.19.0.1:9999)
-  - 포트 바인딩: 0.0.0.0:9999→8080 (모든 네트워크에서 접근 가능)
-  - Agent 내부: 172.19.0.1:10001로 프록시 (같은 네트워크 내 통신)
-  - Runtime 컨테이너: easycicd_easycicd + bridge 네트워크 (멀티 네트워크)
+교훈: 컨테이너 간 통신은 localhost 아닌 gateway IP 사용
 
-✅ 최종 해결 사항
---------------------------------------------------------------------------------
-1. SQLite 자동 생성: create_if_missing(true)
-2. 데이터 경로: /data/easycicd/db.sqlite, /data/easycicd/logs/
-3. Axum 라우팅: {id} 문법, fallback_service 사용
-4. GLIBC 통일: debian:trixie-slim
-5. 정적 파일: frontend 상대 경로
-6. 포트 설정: 웹 UI 10000, 리버스 프록시 9999, 프로젝트 10000부터 시작
-7. nginx 설정: daemon off는 nginx.conf에만
-8. 네트워크 통신: Gateway IP (172.19.0.1) 자동 감지 및 사용
-9. Runtime 네트워크: easycicd_easycicd 네트워크 연결
-10. 모노레포 working_directory: path_filter로부터 추출, 빌드 컨테이너 WORKDIR 동적 설정
+=====
+문제 9: 모노레포 working_directory DB 누락
+=====
 
-❌ 문제 9: 모노레포 빌드 실패 - working_directory DB 저장 누락
---------------------------------------------------------------------------------
-원인: queries.rs의 INSERT 쿼리에 working_directory 컬럼 및 바인딩 파라미터 누락
-증상:
+문제: 
   - Gradle: "Directory '/app' does not contain a Gradle build"
   - npm: "ENOENT: no such file or directory, open '/app/package.json'"
-  - 모노레포 프로젝트에서 path_filter="project1" 설정했으나 빌드는 /app에서 실행됨
-
-근본 원인:
-  1. 프론트엔드(Setup.svelte)에서 working_directory 전송 O
-  2. API(projects.rs)에서 working_directory 수신 O
-  3. CreateProject 구조체에 working_directory 필드 O
-  4. INSERT 쿼리에 working_directory 컬럼 X ← 문제
-  5. 결과: 모든 프로젝트 working_directory = NULL
-  6. 빌드 컨테이너는 항상 /app에서 실행
-  7. 모노레포 하위 프로젝트(project1/)의 package.json/build.gradle 찾지 못함
-
+  - path_filter="project1" 설정했으나 빌드는 /app에서 실행됨
+원인:
+  - INSERT 쿼리에 working_directory 컬럼 바인딩 누락
+  - 모든 프로젝트 working_directory = NULL
+  - 빌드 컨테이너는 항상 /app에서 실행
+데이터 플로우:
+  Frontend → API → DB (누락!) → Build Executor → Docker
 해결:
   1. INSERT 쿼리에 working_directory 컬럼 추가
-  2. VALUES에 ? 플레이스홀더 추가 (13개에서 14개로)
+  2. VALUES에 ? 플레이스홀더 추가 (13개→14개)
   3. .bind(&project.working_directory) 추가
 파일: agent/src/db/queries.rs:89-110
+교훈: 새 필드 추가 시 전체 레이어 검증
 
-관련 수정 이력:
-  - 004_working_directory.sql 마이그레이션 생성
-  - models.rs에 working_directory 필드 추가 (Project, CreateProject)
-  - docker/client.rs에서 WORKDIR 동적 설정
-  - github/detector.rs에서 path_filter로부터 working_directory 추출
-  - build/executor.rs에서 working_directory 전달
-  - frontend Setup.svelte에서 working_directory 전송
-  - api/projects.rs에서 working_directory 수신 및 전달
-  - queries.rs의 migrate()에 migration4 추가
+=====
+문제 10: 헬스체크 stale data
+=====
 
-교훈: 데이터 플로우 전체를 확인해야 함 (Frontend → API → DB → Build Executor → Docker)
-
-❌ 문제 10: 헬스체크 실패 - stale data 문제
---------------------------------------------------------------------------------
-원인: 헬스체크에서 이미 업데이트된 컨테이너 ID를 확인하지 못함
-배경:
-  - 배포 플로우: 새 컨테이너 시작 → DB에 컨테이너 ID 저장 → 헬스체크 수행
-  - deployer.rs의 deploy() 함수에서 project 변수는 함수 시작 시점의 값
-  - DB에 새 컨테이너 ID를 업데이트해도 project 변수는 여전히 old 값 유지
-  - 헬스체크가 old 컨테이너 ID를 체크하여 실패
-
-증상:
-  - 새 컨테이너가 정상 실행 중인데도 헬스체크 실패
-  - active_slot이 전환되지 않음
-  - 프록시 연결 실패 (이전 슬롯의 컨테이너를 가리킴)
-
-문제 코드 (deployer.rs):
-```rust
-// 새 컨테이너 시작
-let container_id = self.docker.run_runtime_container(...).await?;
-
-// DB 업데이트
-match target_slot {
-    Slot::Blue => {
-        self.state.db.update_project_blue_container(project.id, Some(container_id.clone())).await?;
-    }
-    ...
-}
-
-// ❌ 문제: project는 여전히 old container_id를 가지고 있음
-let health_check_result = self.perform_health_check(project, build, target_port).await;
-
-// perform_health_check 내부에서:
-let container_id = match target_slot {
-    Slot::Blue => project.blue_container_id.as_ref(), // ❌ old value
-    ...
-}
-```
-
+문제: 새 컨테이너 정상 실행 중인데도 헬스체크 실패, active_slot 전환 안됨
+원인:
+  - deployer.rs의 deploy() 함수에서 project 변수는 함수 시작 시점 값
+  - DB에 새 container_id 업데이트해도 project 변수는 old 값 유지
+  - 헬스체크가 old container_id 체크하여 실패
 해결:
-  1. perform_health_check에 container_id를 직접 전달
-  2. project 객체에서 읽지 않고 실제 생성된 container_id 사용
-  3. 함수 시그니처 변경:
-     - Before: async fn perform_health_check(&self, project: &Project, build: &Build, port: u16)
-     - After: async fn perform_health_check(&self, project: &Project, build: &Build, container_id: &str)
+  - perform_health_check에 container_id 직접 전달
+  - project 객체에서 읽지 않고 실제 생성된 container_id 사용
+파일: agent/src/build/deployer.rs:118-120, 252-310
+교훈: In-memory 객체와 DB 상태 동기화 주의, 중요한 값은 직접 전달
 
-파일: agent/src/build/deployer.rs
-  - Line 118-120: 헬스체크 호출 시 &container_id 전달
-  - Line 252-310: perform_health_check 함수 시그니처 및 내부 로직 수정
+=====
+문제 11: 헬스체크 context path
+=====
 
-교훈:
-  - In-memory 객체와 DB 상태의 동기화 주의
-  - 중요한 값은 직접 전달하여 stale data 문제 방지
-  - Rust의 소유권 시스템은 이런 버그를 컴파일 타임에 잡지 못함 (논리 오류)
-
-❌ 문제 11: Active Slot 전환 실패 - 헬스체크 컨텍스트 패스
---------------------------------------------------------------------------------
-원인: HTTP 기반 헬스체크가 특정 URL 경로를 가정
-배경:
-  - Spring Boot 앱이 context path를 사용하는 경우 (예: /api/spring)
+문제: Spring Boot context path (/api/spring) 사용 시 404
+원인:
   - 헬스체크 URL: /actuator/health
   - 실제 URL: /api/spring/actuator/health
-  - 결과: 404 Not Found로 헬스체크 실패
-
-사용자 질문: "context path를 입력받게 하자는 뜻이였어 빌드 설정창에서. 아니면 헬스체크 로직을 바꿀까. 그냥 컨테이너 잘 떴는지 체크같은 느낌으로."
-
-선택: 헬스체크 로직 변경 (context path 필드 추가하지 않음)
-
-해결:
-  1. HTTP 요청 기반 헬스체크 제거
-  2. Docker API를 통한 컨테이너 상태 확인으로 변경
-  3. is_container_running() 사용 (bollard API)
-  4. 10회 재시도, 2초 간격
-  5. Context path 설정 불필요
-
-장점:
-  - 모든 프레임워크/언어에서 동작 (언어 중립적)
-  - Context path, health check endpoint 설정 불필요
-  - 단순하고 명확한 로직
-  - 컨테이너 시작 직후 바로 확인 가능
-
+해결: HTTP 헬스체크 제거, Docker API로 컨테이너 상태 확인으로 변경
+  - is_container_running() 사용
+  - 10회 재시도, 2초 간격
 파일: agent/src/build/deployer.rs:252-310
-```rust
-async fn perform_health_check(&self, project: &Project, build: &Build, container_id: &str) -> Result<()> {
-    let max_attempts = 10;
-    let retry_interval = Duration::from_secs(2);
+교훈: 언어/프레임워크 중립적 방식 선택, 복잡한 설정보다 단순한 해결책
 
-    for attempt in 1..=max_attempts {
-        // Docker API로 컨테이너 상태 확인
-        let is_running = self.docker.is_container_running(&container_id).await;
+=====
+문제 12: 시스템 재시작 후 컨테이너 불일치
+=====
 
-        if is_running {
-            info!("Container health check passed on attempt {}/{} - Container is running", attempt, max_attempts);
-            return Ok(());
-        }
+문제: "Project 'xxx': Blue container abc123 not found, skipping cleanup"
+원인:
+  - Agent 컨테이너 재시작 시 Runtime 컨테이너들 삭제됨
+  - DB에는 삭제된 container_id 저장
+해결: 시작 시 컨테이너 상태 동기화
+  - 모든 프로젝트의 blue/green 컨테이너 확인
+  - 존재하지 않는 container_id는 DB에서 제거
+파일: agent/src/main.rs:79-82, 163-200
+교훈: 시스템 시작 시 일관성 검증 필요, DB와 실제 리소스 동기화
 
-        if attempt < max_attempts {
-            sleep(retry_interval).await;
-        }
-    }
+=====
+문제 13: 타겟 슬롯 기존 컨테이너 존재
+=====
 
-    anyhow::bail!("Health check timed out after {} attempts", max_attempts)
-}
-```
-
-교훈:
-  - 복잡한 설정보다 단순한 해결책 선호
-  - 언어/프레임워크 중립적인 방식 선택
-  - 사용자 경험 우선 (추가 설정 최소화)
-
-❌ 문제 12: 컨테이너 상태 불일치 - 시스템 재시작 후
---------------------------------------------------------------------------------
-원인: 시스템 재시작 후 DB에 저장된 컨테이너 ID가 실제로는 존재하지 않음
-배경:
-  - Agent 컨테이너 재시작 (docker-compose restart)
-  - Runtime 컨테이너들은 삭제됨
-  - DB에는 여전히 삭제된 컨테이너 ID 저장
-  - 배포 시 존재하지 않는 컨테이너를 참조하여 에러
-
-증상:
-  - "Project 'xxx': Blue container abc123 not found, skipping cleanup"
-  - Orphaned container references in database
-  - 배포 시 불필요한 에러 로그
-
-해결:
-  1. 시스템 시작 시 컨테이너 상태 동기화 함수 추가
-  2. 모든 프로젝트의 blue/green 컨테이너 확인
-  3. 존재하지 않는 컨테이너 ID는 DB에서 제거
-  4. 깔끔한 초기 상태로 시작
-
-파일: agent/src/main.rs
-```rust
-// Line 79-82: 시작 시 동기화 호출
-info!("Synchronizing container states...");
-synchronize_container_states(&state, &docker).await?;
-info!("Container state synchronization complete");
-
-// Line 163-200: 동기화 함수
-async fn synchronize_container_states(state: &AppState, docker: &DockerClient) -> Result<()> {
-    let projects = state.db.list_projects().await?;
-
-    for project in projects {
-        let mut needs_update = false;
-        let mut new_blue_id = project.blue_container_id.clone();
-        let mut new_green_id = project.green_container_id.clone();
-
-        // Check Blue container
-        if let Some(blue_id) = &project.blue_container_id {
-            if !docker.is_container_running(blue_id).await {
-                info!("Project '{}': Blue container {} not found, clearing from DB", project.name, blue_id);
-                new_blue_id = None;
-                needs_update = true;
-            }
-        }
-
-        // Check Green container
-        if let Some(green_id) = &project.green_container_id {
-            if !docker.is_container_running(green_id).await {
-                info!("Project '{}': Green container {} not found, clearing from DB", project.name, green_id);
-                new_green_id = None;
-                needs_update = true;
-            }
-        }
-
-        // Update database if needed
-        if needs_update {
-            state.db.update_project_blue_container(project.id, new_blue_id).await?;
-            state.db.update_project_green_container(project.id, new_green_id).await?;
-            info!("Project '{}': Container states synchronized", project.name);
-        }
-    }
-
-    Ok(())
-}
-```
-
-교훈:
-  - 영속성 레이어(DB)와 실제 리소스(컨테이너) 상태 동기화 중요
-  - 시스템 시작 시 일관성 검증 필요
-  - Garbage collection 같은 정리 작업 자동화
-
-❌ 문제 13: 배포 실패 - 타겟 슬롯에 기존 컨테이너 존재
---------------------------------------------------------------------------------
-원인: 타겟 슬롯에 기존 컨테이너가 남아있어 포트 충돌
-배경:
-  - 이전 배포가 실패한 경우
-  - 헬스체크 실패로 롤백하지 않은 경우 (디버깅 모드)
-  - 타겟 슬롯에 이미 컨테이너가 실행 중
-  - 동일한 포트로 새 컨테이너 시작 시도 → 포트 충돌
-
-사용자 요구사항: "그래 무조건 2개 단위로 할당하고 그걸 DB적으로 관리해보자. 고쳐줘."
-
-해결:
-  1. 배포 시작 전에 타겟 슬롯 정리
-  2. 기존 컨테이너 확인 → 중지 → 제거
-  3. DB에서 컨테이너 ID 제거
-  4. 깔끔한 상태에서 새 컨테이너 시작
-
+문제: 타겟 슬롯에 기존 컨테이너 남아있어 포트 충돌
+원인: 이전 배포 실패 시 컨테이너 남음
+해결: 배포 전 타겟 슬롯 정리
+  - 기존 컨테이너 확인 → 중지 → 제거
+  - DB에서 container_id 제거
 파일: agent/src/build/deployer.rs:57-83
-```rust
-// Clean up target slot's old container if it exists
-let old_container_id = match target_slot {
-    Slot::Blue => project.blue_container_id.as_ref(),
-    Slot::Green => project.green_container_id.as_ref(),
-};
-
-if let Some(old_id) = old_container_id {
-    // Check if container actually exists
-    if self.docker.is_container_running(old_id).await {
-        info!("Stopping old {} container: {}", target_slot, old_id);
-        self.docker.stop_container(old_id).await.ok();
-    } else {
-        info!("Old {} container {} not found, skipping cleanup", target_slot, old_id);
-    }
-    // Always try to remove regardless of running state
-    self.docker.remove_container(old_id).await.ok();
-
-    // Clear from database
-    match target_slot {
-        Slot::Blue => {
-            self.state.db.update_project_blue_container(project.id, None).await?;
-        }
-        Slot::Green => {
-            self.state.db.update_project_green_container(project.id, None).await?;
-        }
-    }
-}
-```
-
-블루-그린 관리 3단계 보호:
+블루-그린 3단계 보호:
   1. 프로젝트 생성: active_slot='Blue', container_ids=NULL
   2. 시스템 시작: 존재하지 않는 컨테이너 DB 정리
   3. 배포 전: 타겟 슬롯 기존 컨테이너 정리
+교훈: Idempotent operations, 항상 깨끗한 상태에서 시작
 
-교훈:
-  - Idempotent operations (멱등성) 중요
-  - 항상 깨끗한 상태에서 시작
-  - 실패 시나리오 고려한 robust한 설계
-  - DB와 실제 리소스의 일관성 유지
+=====
+문제 14-20: 아키텍처 문제 (리팩토링 필요성)
+=====
 
-🚀 배포 완료
---------------------------------------------------------------------------------
-Docker Hub: choho97/lightweight-ci:latest (sha256:02de4a05b4a3...)
-Git Commit: d2b1b04 (2026-01-08)
-컨테이너: 정상 실행 중
-시스템: 컨테이너 상태 동기화 완료
-헬스체크: Docker 컨테이너 상태 확인 방식으로 변경
-블루-그린: 3단계 보호 체계 구축 완료
+문제 14: AppState God Object - 모든 의존성 집중, 테스트 불가능
+문제 15: 비즈니스 로직과 HTTP 핸들러 혼재
+문제 16: 이벤트 발행 코드 분산
+문제 17: Mock 주입 불가능한 구조
+문제 18: 모듈 간 통신 로깅 부재
+문제 19: DB 접근 분산
+문제 20: API 명세 불일치
 
-📋 실행 방법
---------------------------------------------------------------------------------
-1. docker-compose up -d
-2. http://localhost:10000 접속 (웹 UI)
-3. http://localhost:9999/{project_name} (배포된 앱)
-4. GET /api/settings/webhook-secret로 Webhook Secret 확인
-
-🔍 네트워크 디버깅 명령어
---------------------------------------------------------------------------------
-# Gateway IP 확인
-docker network inspect easycicd_easycicd | jq '.[0].IPAM.Config[0].Gateway'
-
-# Agent IP 확인
-docker inspect easycicd-agent | jq '.[0].NetworkSettings.Networks.easycicd_easycicd.IPAddress'
-
-# Runtime 컨테이너 네트워크 확인
-docker inspect tt-green | jq '.[0].NetworkSettings.Networks | keys'
-
-# 프록시 테스트
-curl http://localhost:9999/tt/
-
-
-================================================================================
-아키텍처 문제점 (모듈화 리팩토링 필요성)
-================================================================================
-
-❌ 문제 14: AppState God Object 패턴
---------------------------------------------------------------------------------
-원인: 모든 의존성이 AppState에 집중됨
-현재 구조:
-  - AppState가 db, event_tx, build_queue, ws_connections, config 등 모두 포함
-  - 모든 API 핸들러, 빌드 시스템, 프록시가 AppState에 의존
-  - 단위 테스트가 불가능 (전체 AppState 필요)
-
-문제점:
-  1. 테스트 어려움: Mock 주입 불가능, 전체 시스템 필요
-  2. 높은 결합도: 한 부분 변경 시 전체 영향
-  3. 불명확한 의존성: 각 모듈이 실제로 무엇을 필요로 하는지 불명확
-
-예시 (agent/src/api/projects.rs):
-```rust
-async fn create_project(State(state): State<AppState>, ...) -> impl IntoResponse {
-    // state.db, state.docker, state.event_tx 모두 접근 가능
-    // 하지만 이 핸들러는 실제로 db만 필요할 수도 있음
-}
-```
-
-필요한 해결책:
+해결 방향:
   - Trait 기반 의존성 주입
-  - 각 모듈이 필요한 의존성만 받도록 분리
-  - AppContext가 서비스들을 조립하되, 서비스는 trait에만 의존
+  - Application Service 레이어 분리
+  - EventBus trait, BoundaryLogger
+  - Repository 패턴
+  - OpenAPI 자동 생성
 
-파일: agent/src/state.rs
+=====
+문제 21: broadcast 채널 에러 미처리
+=====
 
-❌ 문제 15: 비즈니스 로직과 HTTP 핸들러 혼재
---------------------------------------------------------------------------------
-원인: API 레이어에 비즈니스 로직이 직접 작성됨
-현재 구조:
-  - agent/src/api/projects.rs (521 lines)
-  - 프로젝트 생성, 삭제, 컨테이너 관리 로직이 모두 API 핸들러에 포함
-  - HTTP 요청 처리와 비즈니스 로직이 섞여있음
+문제: WebSocket 브로드캐스팅 조용히 중단
+원인: broadcast::Receiver::recv() Err 케이스 미처리
+해결: match로 Ok/Err 명시적 처리, Err 시 에러 로그 및 종료
+파일: agent/src/ws_broadcaster.rs:14
+교훈: 모든 Result 명시적 처리, 특히 채널/스트림
 
-문제점:
-  1. 테스트 어려움: HTTP 레이어 없이는 비즈니스 로직 테스트 불가
-  2. 재사용 불가: Webhook, WebSocket 등에서 같은 로직 재사용 어려움
-  3. 가독성 저하: 521줄의 파일에서 핵심 로직 찾기 어려움
+=====
+문제 22: 워크스페이스 경로 불일치
+=====
 
-예시 (agent/src/api/projects.rs:180-220):
-```rust
-async fn delete_project(State(state): State<AppState>, Path(id): Path<i64>) -> impl IntoResponse {
-    // 1. HTTP 요청 파싱
-    // 2. 프로젝트 조회
-    // 3. 컨테이너 중지/삭제 (비즈니스 로직!)
-    // 4. 파일 시스템 정리 (비즈니스 로직!)
-    // 5. DB 삭제
-    // 6. HTTP 응답 생성
-    // 모두 한 함수에 혼재
-}
-```
-
-필요한 해결책:
-  - Application Service 레이어 분리 (ProjectService, BuildService 등)
-  - API 핸들러는 요청 파싱 + 서비스 호출 + 응답 생성만 담당
-  - 비즈니스 로직은 서비스 레이어에서 독립적으로 테스트
-
-파일: agent/src/api/projects.rs, agent/src/api/builds.rs
-
-❌ 문제 16: 이벤트 발행 코드 분산
---------------------------------------------------------------------------------
-원인: 이벤트 발행이 여러 모듈에 흩어져 있음
-현재 구조:
-  - agent/src/build/executor.rs: 빌드 이벤트 발행
-  - agent/src/build/deployer.rs: 배포 이벤트 발행
-  - agent/src/api/webhook.rs: Webhook 이벤트 발행
-  - 각 모듈이 직접 state.event_tx.send() 호출
-
-문제점:
-  1. 로깅 불가: 어디서 어떤 이벤트가 발행되는지 추적 어려움
-  2. 중복 코드: 이벤트 발행 전후 로직 중복
-  3. 에러 처리 일관성 부족: 각 모듈마다 다른 방식으로 에러 처리
-
-예시 (agent/src/build/executor.rs):
-```rust
-// 이벤트 발행만 하고 로깅 없음
-let _ = self.state.event_tx.send(Event::BuildStatus { ... });
-```
-
-필요한 해결책:
-  - EventBus trait 정의
-  - 모든 이벤트 발행을 EventBus를 통해 수행
-  - BoundaryLogger에서 모든 이벤트 발행 로깅
-  - 중앙화된 에러 처리
-
-파일: agent/src/events.rs, agent/src/build/executor.rs, agent/src/build/deployer.rs
-
-❌ 문제 17: 테스트 불가능한 구조
---------------------------------------------------------------------------------
-원인: Mock 주입이 불가능한 설계
-현재 구조:
-  - BuildExecutor, Deployer가 직접 DockerClient를 생성
-  - 테스트 시 실제 Docker daemon 필요
-  - 단위 테스트 작성 불가능
-
-문제점:
-  1. 느린 테스트: 실제 Docker 컨테이너 실행 필요
-  2. 불안정한 테스트: 네트워크, Docker daemon 상태에 의존
-  3. CI/CD 어려움: Docker-in-Docker 환경 필요
-
-예시 (agent/src/build/executor.rs):
-```rust
-pub struct BuildExecutor {
-    state: Arc<AppState>,
-    docker: DockerClient, // 직접 생성, Mock 주입 불가
-}
-```
-
-필요한 해결책:
-  - ContainerRuntime trait 정의
-  - DockerClient가 trait 구현
-  - MockContainerRuntime 작성
-  - 서비스 생성 시 trait을 주입
-
-파일: agent/src/build/executor.rs, agent/src/build/deployer.rs, agent/src/docker/client.rs
-
-❌ 문제 18: 모듈 간 통신 로깅 부재
---------------------------------------------------------------------------------
-원인: 모듈 간 호출이 로깅되지 않음
-현재 구조:
-  - API → BuildService 호출: 로깅 없음
-  - BuildService → DockerClient 호출: 로깅 없음
-  - BuildService → Database 호출: 로깅 없음
-  - 전체 플로우 추적 불가능
-
-문제점:
-  1. 디버깅 어려움: 문제 발생 시 어느 단계에서 실패했는지 파악 어려움
-  2. 성능 분석 불가: 각 단계별 소요 시간 측정 불가
-  3. 운영 어려움: 프로덕션 환경에서 문제 추적 어려움
-
-예시 (현재 로그):
-```
-[INFO] Starting build
-[INFO] Build completed
-// 중간 과정이 모두 블랙박스
-```
-
-필요한 로그 (목표):
-```
-[10:15:23] [INFO] [abc-123] [API→BuildService] execute_build [ENTRY] build_id=42
-[10:15:23] [INFO] [abc-123] [BuildService→BuildRepo] get [CALL]
-[10:15:23] [INFO] [abc-123] [BuildService→BuildRepo] get [←DONE] 5ms
-[10:15:23] [INFO] [abc-123] [BuildService→Docker] run_build [EXT→]
-[10:15:45] [INFO] [abc-123] [BuildService→Docker] run_build [←DONE] 22000ms
-[10:15:45] [INFO] [abc-123] [API→BuildService] execute_build [←DONE] 22050ms
-```
-
-필요한 해결책:
-  - BoundaryLogger 구현 (모든 모듈 경계에서 로깅)
-  - Trace ID 생성 및 전파
-  - API 미들웨어에서 trace ID 추가
-  - 모든 서비스 호출 시 로깅
-
-파일: 전체 (리팩토링 필요)
-
-❌ 문제 19: 데이터베이스 접근 분산
---------------------------------------------------------------------------------
-원인: 여러 모듈에서 직접 DB 쿼리 실행
-현재 구조:
-  - agent/src/db/queries.rs에 모든 쿼리 집중
-  - API, BuildExecutor, Deployer가 직접 queries 모듈 호출
-  - Repository 패턴 미적용
-
-문제점:
-  1. 테스트 어려움: 실제 SQLite 필요
-  2. 로직 중복: 여러 곳에서 유사한 DB 로직 반복
-  3. 변경 어려움: DB 스키마 변경 시 여러 곳 수정 필요
-
-필요한 해결책:
-  - Repository trait 정의 (ProjectRepository, BuildRepository)
-  - SqliteRepository 구현
-  - MockRepository 작성 (테스트용)
-  - 서비스 레이어에서만 Repository 사용
-
-파일: agent/src/db/queries.rs
-
-❌ 문제 20: API 명세 불일치
---------------------------------------------------------------------------------
-원인: 코드 변경 시 문서 업데이트 누락
-현재 상태:
-  - API_통신_명세서.txt가 실제 구현과 불일치
-  - 새 API 추가 시 문서 업데이트 누락
-  - 에러 응답 포맷 불일치
-
-문제점:
-  1. 프론트엔드 개발 어려움: 실제 API와 문서가 다름
-  2. 협업 어려움: 다른 개발자가 API 파악 어려움
-  3. 유지보수 어려움: 문서 신뢰도 낮음
-
-필요한 해결책:
-  - OpenAPI 3.0 스펙 자동 생성 (utoipa 크레이트)
-  - 코드에서 문서 생성 (Single Source of Truth)
-  - API 변경 시 자동으로 문서 업데이트
-
-파일: API_통신_명세서.txt (자동 생성으로 대체 필요)
-
-✅ 리팩토링 계획 (Phase 11)
---------------------------------------------------------------------------------
-위 문제들을 해결하기 위한 리팩토링 계획:
-
-1. Trait 기반 의존성 주입 (문제 14, 17, 19 해결)
-   - ProjectRepository, BuildRepository, SettingsRepository trait
-   - ContainerRuntime trait
-   - EventBus trait
-
-2. Application Service 레이어 분리 (문제 15 해결)
-   - ProjectService, BuildService, DeploymentService
-   - 비즈니스 로직과 HTTP 핸들러 분리
-
-3. 통합 로깅 시스템 (문제 16, 18 해결)
-   - BoundaryLogger 구현
-   - Trace ID 전파
-   - 모든 모듈 경계에서 로깅
-
-4. API 문서 자동 생성 (문제 20 해결)
-   - OpenAPI 3.0 스펙
-   - 코드에서 문서 생성
-
-상세 계획: 개발_진행_상황.txt Phase 11 참조
-
-교훈:
-  - 초기 설계부터 테스트 가능성 고려 필요
-  - 명확한 레이어 분리 (API, Application, Infrastructure)
-  - 관찰 가능성(Observability) 설계 필수 (로깅, 추적)
-  - 문서는 코드에서 자동 생성
-
-================================================================================
-Phase 5-6 전환 후 발견된 문제 (2026-01-10)
-================================================================================
-
-❌ 문제 21: ws_broadcaster.rs 브로드캐스트 채널 에러 미처리
---------------------------------------------------------------------------------
-원인: broadcast::Receiver::recv()는 Result를 반환하지만 Err 케이스를 처리하지 않음
-증상: 모든 이벤트 송신자가 드롭되면 WebSocket 브로드캐스팅이 조용히 중단됨
-위치: agent/src/ws_broadcaster.rs:14
-해결: match 패턴으로 Ok/Err 명시적 처리, Err 시 에러 로그 및 함수 종료
-
-수정 코드:
-```rust
-event_result = event_rx.recv() => {
-    match event_result {
-        Ok(event) => {
-            context.ws_connections.broadcast_event(&event).await;
-        }
-        Err(e) => {
-            error!("Event broadcast channel error: {:?}", e);
-            return Err(anyhow::anyhow!("Event channel closed: {:?}", e));
-        }
-    }
-}
-```
-
-❌ 문제 22: 프로젝트 워크스페이스 경로 불일치
---------------------------------------------------------------------------------
+문제: Git 정보 수집 시 빈 커밋 해시 반환
 원인: API와 서비스에서 다른 경로 사용 (/workspace/projects vs /data/workspace)
-증상: Git 정보 수집 시 존재하지 않는 경로 탐색으로 빈 커밋 해시 반환
-위치:
-  - agent/src/api/projects.rs:163
-  - agent/src/application/services/project_service.rs:112
+해결: /data/workspace/{name}로 통일
+파일: agent/src/api/projects.rs:163, agent/src/application/services/project_service.rs:112
+교훈: 하드코딩 경로는 상수화
 
-해결: 모든 위치에서 `/data/workspace/{project_name}` 통일
-  - `/workspace/projects/{name}` → `/data/workspace/{name}`
+=====
+문제 23: 순차 처리 Race Condition
+=====
 
-❌ 문제 23: build/worker.rs 순차 처리 Race Condition
---------------------------------------------------------------------------------
-원인: finish_processing() 직후 즉시 다음 빌드가 시작될 수 있음
-증상: 동일 프로젝트의 순차 처리 보장이 미세하게 깨질 수 있음
-위치: agent/src/build/worker.rs:42
-
+문제: 동일 프로젝트 순차 처리 보장 깨짐
+원인: finish_processing() 직후 즉시 다음 빌드 시작
 해결: finish_processing() 후 100ms 딜레이 추가
-```rust
-ctx.build_queue.finish_processing(project_id).await;
-sleep(Duration::from_millis(100)).await;
-```
+파일: agent/src/build/worker.rs:42
+교훈: 상태 전환 후 작은 딜레이로 race condition 방지
 
-❌ 문제 24: proxy/router.rs Response 생성 unwrap() 남용
---------------------------------------------------------------------------------
-원인: Response::builder().body().unwrap() 호출이 10곳에서 발생
-증상: Body 구성 실패 시 panic 발생 가능, 프록시 전체 크래시 위험
-위치: agent/src/proxy/router.rs (라인 82, 92, 103, 113, 127, 135, 196, 224, 240, 267)
+=====
+문제 24: Response 생성 unwrap() 남용
+=====
 
-해결:
-  1. error_response() 헬퍼 함수 추가
-     - StatusCode와 message를 받아 안전하게 Response 생성
-     - 실패 시 적절한 hyper::Error 반환
+문제: Body 구성 실패 시 panic, 프록시 크래시 위험
+원인: Response::builder().body().unwrap() 10곳에서 사용
+해결: error_response() 헬퍼 함수 추가
+파일: agent/src/proxy/router.rs (82, 92, 103, 113, 127, 135, 196, 224, 240, 267)
+교훈: unwrap() 대신 적절한 에러 처리, 특히 핵심 경로
 
-  2. 모든 unwrap()을 다음으로 교체:
-     - error_response() 헬퍼 사용 (9곳)
-     - map_err() 체이닝 (1곳, 최종 response 빌더)
+=====
+문제 25: Trait Scope 누락 - 대규모 컴파일 에러
+=====
 
-수정 예시:
-```rust
-// Before:
-return Ok(Response::builder()
-    .status(StatusCode::NOT_FOUND)
-    .header("Content-Type", "text/plain; charset=utf-8")
-    .body(Full::new(Bytes::from("Not found")))
-    .unwrap());
+문제: 4개 에러 → 119개로 폭발
+원인: Phase 5-6 리팩토링 후 trait 메서드 사용하는데 trait import 누락
+핵심: Rust는 trait 메서드 사용 시 반드시 trait이 scope에 있어야 함
+해결: 필요한 trait import 추가
+예시:
+  - use crate::application::events::event_bus::EventBus;
+  - use crate::application::ports::repositories::{ProjectRepository, BuildRepository};
+발생 위치: ws_broadcaster.rs, build/worker.rs, api/webhook.rs, api/projects.rs 등 10개 파일
+교훈: trait 메서드 사용 시 반드시 trait import
 
-// After:
-return error_response(StatusCode::NOT_FOUND, "Not found");
-```
+=====
+문제 26: api_exit() 타입 불일치
+=====
 
-✅ 핵심 교훈 (Phase 5-6)
---------------------------------------------------------------------------------
-1. **채널 에러 처리**: 모든 Result는 명시적 처리, 특히 채널/스트림 종료 케이스
-2. **경로 일관성**: 하드코딩된 경로는 상수화하여 전체 일관성 보장
-3. **동시성 제어**: 상태 전환 후 작은 딜레이로 race condition 방지
-4. **Panic 방지**: unwrap() 대신 적절한 에러 처리 (특히 프록시 같은 핵심 경로)
-5. **에러 전파**: HTTP 경계에서 적절한 에러 응답 생성
+문제: 80+ 개 type mismatch 에러
+원인: api_exit() 시그니처가 u16 요구하는데 모든 핸들러에서 &str로 호출
+해결: sed로 일괄 치환
+  sed -i 's/api_exit(\(.*\), "\([0-9]\{3\}\)")/api_exit(\1, \2)/g' agent/src/api/*.rs
+예시: "200" → 200
+교훈: 공통 패턴은 sed로 일괄 처리
 
-✅ 권장 개선 사항
---------------------------------------------------------------------------------
-- 프로젝트 경로를 환경 변수 또는 config 파일로 중앙 관리
-- BuildQueue에 명시적 동기화 메커니즘 추가 고려
-- Response 빌더 패턴에 타입 안전성 래퍼 추가
-- 모든 핵심 경로에서 unwrap() 사용 금지 (컴파일러 경고 추가 고려)
+=====
+문제 27: 타입 추론 실패
+=====
 
-❌ 문제 25: Rust Trait Scope 누락으로 인한 대규모 컴파일 에러
---------------------------------------------------------------------------------
-날짜: 2026-01-10
-원인: Phase 5-6 마이그레이션 후 Trait 메서드를 사용하는 모든 파일에서 trait import 누락
-증상:
-  - ws_broadcaster.rs에서 `event_bus.subscribe()` 호출 실패
-  - 모든 API 파일에서 `project_repo.list()`, `.get()` 등 호출 실패
-  - 처음 4개 에러 → 119개로 폭발 → 점진적으로 해결하여 0개로 수렴
-
-핵심 문제:
-  Rust는 trait 메서드 사용 시 **반드시 trait이 scope에 있어야 함**
-  Arc<SqliteProjectRepository>가 ProjectRepository trait을 구현하더라도,
-  `use crate::application::ports::repositories::ProjectRepository;` 없이는
-  `.list()`, `.get()` 등의 메서드를 호출할 수 없음
-
-발생 위치:
-  1. ws_broadcaster.rs - EventBus trait
-  2. build/worker.rs - ProjectRepository, BuildRepository
-  3. api/webhook.rs - ProjectRepository, BuildRepository, SettingsRepository, EventBus
-  4. api/projects.rs - ProjectRepository, BuildRepository
-  5. api/builds.rs - BuildRepository, ProjectRepository
-  6. api/settings.rs - SettingsRepository
-  7. api/github_api.rs - SettingsRepository
-  8. proxy/router.rs - ProjectRepository
-  9. main.rs - ProjectRepository
-  10. state/app_context.rs - EventBus
-
-해결:
-각 파일에 필요한 trait import 추가
-```rust
-// 예시 1: ws_broadcaster.rs
-use crate::application::events::event_bus::EventBus;
-
-// 예시 2: api/webhook.rs
-use crate::application::ports::repositories::{ProjectRepository, BuildRepository, SettingsRepository};
-use crate::application::events::event_bus::EventBus;
-```
-
-❌ 문제 26: BoundaryLogger api_exit() status 파라미터 타입 불일치
---------------------------------------------------------------------------------
-날짜: 2026-01-10
-원인: api_exit() 시그니처가 u16을 요구하는데 모든 API 핸들러에서 &str로 호출
-증상: 80+ 개의 type mismatch 에러 발생
-위치: webhook.rs, github_api.rs, projects.rs, builds.rs, settings.rs 전체
-
-에러 예시:
-```
-error[E0308]: mismatched types
-  --> src/api/webhook.rs:71:91
-   |
-71 |  ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), "401");
-   |                                                                                 ^^^^^
-   |                                                                   expected `u16`, found `&str`
-```
-
-해결:
-sed를 사용한 일괄 치환
-```bash
-sed -i 's/api_exit(\(.*\), "\([0-9]\{3\}\)")/api_exit(\1, \2)/g' agent/src/api/*.rs
-```
-
-Before: `ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), "200");`
-After:  `ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), 200);`
-
-❌ 문제 27: 타입 추론 실패 - Option<T> 반환 시 명시적 타입 필요
---------------------------------------------------------------------------------
-날짜: 2026-01-10
+문제: cannot infer type
 원인: Repository trait의 제네릭 메서드 호출 시 타입 추론 불가
-증상: `cannot infer type` 컴파일 에러
-위치: build/worker.rs (2곳), api/webhook.rs (1곳)
+해결: 반환 타입 명시적 지정
+예시:
+  let project_opt: Option<crate::db::models::Project> = ctx.project_repo.get(project_id).await?;
+  let project = project_opt.context(...)?;
+파일: build/worker.rs (2곳), api/webhook.rs (1곳)
+교훈: 제네릭 반환 타입은 명시적 annotation 필요
 
-에러 예시:
-```
-error[E0282]: type annotations needed
-  --> src/build/worker.rs:62:47
-   |
-62 |   let project: crate::db::models::Project = ctx
-   |  _______________________________________________^
-63 | |         .project_repo
-64 | |         .get(project_id)
-65 | |         .await?
-   | |_______________^ cannot infer type
-```
+=====
+문제 28: 중복 모듈 선언
+=====
 
-해결:
-제네릭 반환 타입을 명시적으로 지정
-```rust
-// Before (실패):
-let project: crate::db::models::Project = ctx
-    .project_repo
-    .get(project_id)
-    .await?
-    .context(format!("Project not found: {}", project_id))?;
+문제: file for module 'state' found at both "src/state.rs" and "src/state/mod.rs"
+원인: Phase 5에서 state.rs를 state/ 디렉토리로 분리했으나 state.rs 파일 남음
+해결: agent/src/state.rs 삭제
+교훈: foo.rs 또는 foo/mod.rs 둘 중 하나만
 
-// After (성공):
-let project_opt: Option<crate::db::models::Project> = ctx
-    .project_repo
-    .get(project_id)
-    .await?;
-let project = project_opt.context(format!("Project not found: {}", project_id))?;
-```
+=====
+문제 29: hyper Body moved value
+=====
 
-❌ 문제 28: 중복 모듈 선언 - state.rs와 state/mod.rs 충돌
---------------------------------------------------------------------------------
-날짜: 2026-01-10
-원인: Phase 5에서 state.rs를 state/ 디렉토리로 분리했으나 state.rs 파일이 남아있음
-증상: `file for module 'state' found at both "src/state.rs" and "src/state/mod.rs"`
-위치: agent/src/
-
-해결: agent/src/state.rs 파일 삭제
-```bash
-rm agent/src/state.rs
-```
-
-Rust는 모듈을 `foo.rs` 또는 `foo/mod.rs` 둘 중 하나로만 선언 가능
-
-❌ 문제 29: hyper Body moved value 에러
---------------------------------------------------------------------------------
-날짜: 2026-01-10
+문제: use of moved value: body
 원인: proxy/router.rs에서 body를 두 번 사용 (move 후 재사용)
-증상: `use of moved value: body`
-위치: agent/src/proxy/router.rs:257
-
-코드:
-```rust
-match response_builder.body(Full::new(body)) {  // body moved here
-    Ok(response) => Ok(response),
-    Err(e) => {
-        warn!("Failed to build final response: {:?}", e);
-        Ok(Response::new(Full::new(body)))  // ❌ body already moved!
-    }
-}
-```
-
 해결: clone 사용
-```rust
-match response_builder.body(Full::new(body.clone())) {  // body cloned
+  match response_builder.body(Full::new(body.clone())) {
     Ok(response) => Ok(response),
-    Err(e) => {
-        warn!("Failed to build final response: {:?}", e);
-        Ok(Response::new(Full::new(body)))  // ✅ original body used here
-    }
-}
-```
+    Err(e) => Ok(Response::new(Full::new(body)))
+  }
+파일: agent/src/proxy/router.rs:257
+교훈: 값 두 번 사용 시 clone 필요
 
-❌ 문제 30: tracing macro import 누락
---------------------------------------------------------------------------------
-날짜: 2026-01-10
-원인: main.rs에서 error! 매크로 사용했으나 import하지 않음
-증상: `cannot find macro 'error' in this scope`
-위치: agent/src/main.rs:116
+=====
+문제 30: tracing macro import 누락
+=====
 
-해결:
-```rust
-// Before:
-use tracing::info;
+문제: cannot find macro 'error' in this scope
+원인: main.rs에서 error! 매크로 사용했으나 import 안함
+해결: use tracing::{info, error};
+파일: agent/src/main.rs:116
+교훈: 매크로도 명시적 import 필요
 
-// After:
-use tracing::{info, error};
-```
+=====
+문제 31: sqlx::migrate! 동기화
+=====
 
-✅ 핵심 교훈 (Phase 5-6 디플로이 과정)
---------------------------------------------------------------------------------
-1. **Trait Scope 규칙**: Rust에서 trait 메서드 사용 시 반드시 trait을 명시적으로 import해야 함
-2. **타입 추론의 한계**: 제네릭 반환 타입은 명시적 annotation이 필요한 경우가 많음
-3. **일괄 수정의 효율성**: sed 같은 도구로 반복적 패턴을 빠르게 수정 가능
-4. **에러 체이닝**: 처음 작은 에러가 연쇄적으로 수백 개 에러를 유발할 수 있음 (trait scope 누락 → 119개 에러)
-5. **Move Semantics 주의**: Rust의 소유권 시스템에서 값을 두 번 사용할 때는 clone 필요
-6. **Macro도 Import**: info!, error!, warn! 같은 매크로도 명시적 import 필요
-
-✅ 디플로이 에러 해결 프로세스
---------------------------------------------------------------------------------
-1단계: 에러 개수 파악 (52개 → 81개 → 119개 → 1개 → 0개)
-2단계: 공통 패턴 찾기 (trait import, type annotation, api_exit signature)
-3단계: 일괄 수정 가능한 것은 sed로 처리
-4단계: 개별 수정 필요한 것은 하나씩 처리
-5단계: 마지막 1-2개 에러는 grep으로 정확히 위치 파악 후 수정
-
-❌ 문제 31: sqlx::migrate! 매크로와 마이그레이션 파일 동기화 문제
---------------------------------------------------------------------------------
-날짜: 2026-01-10
-원인: sqlx::migrate!() 매크로가 컴파일 타임에 마이그레이션을 바이너리에 임베드하는 동작 방식 미이해
-증상:
-  - 마이그레이션 파일 수정/삭제 후에도 컨테이너가 계속 재시작됨
-  - `duplicate column name` 에러 반복 발생
-  - DB 초기화를 10번 이상 반복해야 했음
-
-핵심 문제:
-  **sqlx::migrate!("./migrations")의 동작 방식**
-  1. 컴파일 타임에 `./migrations` 디렉토리를 읽음
-  2. 모든 .sql 파일을 **바이너리에 임베드**
-  3. 런타임에는 임베드된 데이터를 사용 (파일시스템 안 봄)
-
+문제: 마이그레이션 파일 삭제해도 컨테이너 재시작 반복, "duplicate column name" 에러
+원인: sqlx::migrate!()가 컴파일 타임에 바이너리에 임베드
+핵심:
+  1. 컴파일 타임에 ./migrations 디렉토리 읽음
+  2. 모든 .sql 파일을 바이너리에 임베드
+  3. 런타임에는 임베드된 데이터 사용 (파일시스템 안 봄)
 발생 시나리오:
-  1. 003_deploy_logs.sql 작성 → 빌드 → 배포 → DB에 적용됨
+  1. 003_deploy_logs.sql 작성 → 빌드 → 배포 → DB 적용
   2. 로컬에서 003_deploy_logs.sql 삭제
-  3. 다시 배포 시도
-  4. **Docker 이미지는 여전히 이전 빌드** (003 포함)
-  5. 컨테이너 실행 → 임베드된 003 실행 시도
-  6. DB에는 이미 deploy_log_path 컬럼 존재
-  7. → `duplicate column name` 에러!
-
-위치:
-  - agent/src/main.rs:51 - sqlx::migrate!("./migrations").run(&pool)
-  - agent/Dockerfile:23 - COPY agent/migrations ./migrations
-  - agent/Dockerfile:44 - COPY --from=builder /build/migrations /app/migrations
-
-추가 문제:
-  **SQLite의 한계**
-  - `ALTER TABLE ADD COLUMN IF NOT EXISTS` 구문 미지원
-  - PostgreSQL/MySQL과 달리 조건부 DDL 불가능
-
+  3. 다시 배포 → Docker 이미지는 여전히 이전 빌드 (003 포함)
+  4. 컨테이너 실행 → 임베드된 003 실행 시도 → "duplicate column name"
 해결:
-  1. 마이그레이션 파일 수정/삭제 후 **반드시 재빌드**
-     ```bash
-     ./deploy.sh  # 새로운 바이너리에 최신 마이그레이션 임베드
-     ```
-
-  2. 마이그레이션 충돌 발생 시 DB 초기화
-     ```bash
+  1. 마이그레이션 파일 수정/삭제 후 반드시 재빌드 (./deploy.sh)
+  2. 충돌 발생 시 DB 초기화
      docker-compose down
      sudo rm -rf /data/easycicd/db.sqlite*
      docker-compose up -d
-     ```
+교훈: 한번 배포된 마이그레이션은 수정 금지, 새 파일 추가
 
-  3. **마이그레이션 파일 관리 원칙**
-     - 기존 마이그레이션 파일은 **절대 수정 금지**
-     - 변경이 필요하면 새 마이그레이션 파일 추가
-     - 파일명: 순서대로 넘버링 (001_, 002_, 003_...)
-     - 체크섬 변경 방지
+=====
+문제 32: 빌드 실패 시 로그 404
+=====
 
-올바른 마이그레이션 추가 예시:
-```sql
--- 004_add_new_column.sql (새 파일)
-ALTER TABLE builds ADD COLUMN new_field TEXT;
+문제: Build #9, #10 실패했으나 status "Building"으로 남음, build-logs API 404
+원인:
+  1. BuildService에서 prepare_source() 단계에서 에러
+  2. 로그 파일은 prepare_source() 이후에 생성
+  3. 에러 시 로그 파일 미생성 → 404
+  4. worker.rs에서 에러 발생 시 DB 상태 미업데이트
+로그 플로우:
+  Line 104: 로그 디렉토리 생성
+  Line 107: prepare_source() 호출 ← 여기서 실패
+  Line 113: 로그 파일 생성 ← 도달하지 못함
+해결:
+  1. worker.rs에서 에러 시 build_repo.finish(build_id, BuildStatus::Failed) 호출
+  2. workspace 경로를 프로젝트 이름 → ID로 변경
+교훈: 로그 파일 최대한 빨리 생성, 에러 처리에서 DB 상태 업데이트
 
--- ❌ 003_deploy_logs.sql 수정 금지!
-```
+=====
+문제 33: Proxy 502 - 변수명 불일치
+=====
 
-Dockerfile 구조 이해:
-```dockerfile
-# Line 23: 빌드 컨테이너에 복사 (컴파일 타임 임베드용)
-COPY agent/migrations ./migrations
-
-# Line 26: 컴파일 시 임베드 발생
-RUN touch src/main.rs && cargo build --release
-
-# Line 44: 런타임 이미지에 복사 (실제로는 안 씀, 참고용)
-COPY --from=builder /build/migrations /app/migrations
-```
-
-✅ 핵심 교훈 (sqlx 마이그레이션)
---------------------------------------------------------------------------------
-1. **컴파일 타임 임베드**: sqlx::migrate!()는 빌드 시 파일을 읽어 바이너리에 포함
-2. **파일 삭제만으론 부족**: 로컬에서 파일 삭제해도 Docker 이미지는 이전 버전 사용
-3. **재빌드 필수**: 마이그레이션 변경 시 항상 ./deploy.sh로 재빌드
-4. **불변성 원칙**: 한번 배포된 마이그레이션은 수정하지 말고 새 파일 추가
-5. **SQLite 제약**: 조건부 DDL 미지원으로 마이그레이션 관리가 더 까다로움
-
-✅ 디버깅 팁
---------------------------------------------------------------------------------
-- 컨테이너 내 마이그레이션 확인: `docker exec <container> ls -la /app/migrations/`
-- 임베드된 마이그레이션은 파일 수정으로 변경 불가
-- sqlx 마이그레이션 테이블: `_sqlx_migrations` (적용 이력 저장)
-- 마이그레이션 체크섬 불일치 시: DB 초기화 또는 새 마이그레이션 추가
-
----
-
-## Problem 32: 빌드 실패 시 로그 파일 404 및 상태 미업데이트 (2026-01-10)
-
-**증상**:
-- Build #9, #10이 실패했으나 status가 "Building"으로 남음
-- build-logs API가 404 반환
-
-**원인**:
-1. BuildService에서 prepare_source() 단계에서 에러 발생
-2. 로그 파일은 prepare_source() **이후**에 생성됨 (line 113)
-3. 에러 발생 시 로그 파일이 생성되지 않아 404 발생
-4. worker.rs에서 에러 발생 시 DB 상태를 업데이트하지 않음
-
-**로그 플로우**:
-```
-Line 104: 로그 디렉토리 생성 (/data/easycicd/logs/6/)
-Line 107: prepare_source() 호출 ← 여기서 실패!
-Line 113: 로그 파일 생성 ← 도달하지 못함
-```
-
-**worker.rs 에러 처리**:
-```rust
-if let Err(e) = process_build(...).await {
-    error!("[{}] Build #{} failed: {}", trace_id, build_id, e);
-    // ❌ 상태 업데이트 없음!
-}
-```
-
-**해결**:
-1. worker.rs에서 에러 발생 시 `build_repo.finish(build_id, BuildStatus::Failed)` 호출
-2. workspace 경로를 프로젝트 이름 → 프로젝트 ID로 변경
-
-**교훈**:
-- 로그 파일은 최대한 빨리 생성해야 함 (디렉토리 생성 직후)
-- 에러 처리에서 반드시 DB 상태 업데이트 필요
-- ID 기반 디렉토리 구조 사용 (이름은 중복/변경 가능)
-
----
-
-## Problem 33: Proxy 502 에러 - 리팩토링 후 변수명 불일치 (2026-01-10)
-
-**증상**:
-- 프록시가 runtime 컨테이너로 라우팅 시 502 Bad Gateway 발생
-- 로그: "Backend request failed: error sending request for url (http://172.19.0.1:10002/)"
-
-**근본 원인**:
-Phase 5-6 리팩토링 과정에서 proxy/router.rs의 `handle_request()` 함수 파라미터가 변경됨
-- **변경 전**: `state: AppState`
-- **변경 후**: `ctx: AppContext`
-
-하지만 target_uri를 생성할 때 **변수명을 `context`로 잘못 사용**:
-```rust
-// ❌ 에러 코드 (line 169, 171):
-format!("http://{}:{}{}?{}", context.gateway_ip, ...)  // context는 존재하지 않음
-format!("http://{}:{}{}", context.gateway_ip, ...)
-
-// ✅ 올바른 코드:
-format!("http://{}:{}{}?{}", ctx.gateway_ip, ...)
-format!("http://{}:{}{}", ctx.gateway_ip, ...)
-```
-
-**왜 발견이 어려웠나**:
-1. **로컬 cargo build는 성공** - 로컬 환경에서는 문제가 없었음
-2. **Docker 빌드만 실패** - Docker 레이어 캐싱 때문에 오래된 코드 사용
-3. **`--no-cache`로도 실패** - Dockerfile이 복사하는 소스 코드 자체에 오타가 있었음
-4. **에러 메시지 불명확** - "2 previous errors" 표시만 있고 E0425 위치 안 보임
-
-**컴파일 에러**:
-```
-error[E0425]: cannot find value `context` in this scope
+문제: 502 Bad Gateway, "Backend request failed: error sending request for url (http://172.19.0.1:10002/)"
+원인:
+  - Phase 5-6 리팩토링 후 파라미터 변경: state → ctx
+  - target_uri 생성할 때 변수명 오타: context.gateway_ip (존재 안함)
+컴파일 에러:
+  error[E0425]: cannot find value `context` in this scope
   --> src/proxy/router.rs:169:38
-169 | format!("http://{}:{}{}?{}", context.gateway_ip, target_port, ...)
-    |                              ^^^^^^^ not found in this scope
-```
+발견이 어려웠던 이유:
+  - 로컬 cargo build 성공
+  - Docker 빌드만 실패 (레이어 캐싱)
+해결: context.gateway_ip → ctx.gateway_ip
+파일: proxy/router.rs:169, 171
+교훈: 리팩토링 시 변수명 일관성 체크, cargo build 2>&1 | grep "error\[E"
 
-**디버깅 과정**:
-1. 로그에서 "502 Bad Gateway" 확인
-2. 처음엔 Docker 네트워킹 문제로 추정
-   - `host.docker.internal` 시도 → 실패
-   - 컨테이너 이름으로 직접 접근 시도 → 실패
-3. Git 히스토리 확인하여 리팩토링 전 코드 비교
-   - **발견**: 원래는 `state.gateway_ip`를 사용했음
-4. `ctx.gateway_ip`로 수정했으나 변수명 오타(`context` vs `ctx`)
+=====
+문제 34: bollard 0.19 deprecated API
+=====
 
-**해결**:
-proxy/router.rs:169, 171 두 줄에서 `context.gateway_ip` → `ctx.gateway_ip` 수정
+문제: this function takes 0 arguments but 1 argument was supplied
+원인: bollard 0.19에서 ListContainersOptions, RemoveContainerOptions deprecated
+해결: #[allow(deprecated)] 추가
+교훈: 크레이트 업데이트 시 CHANGELOG 확인
 
-**올바른 proxy 라우팅 방식**:
-```rust
-// 리팩토링 전 (작동함):
-let target_uri = format!("http://{}:{}{}", state.gateway_ip, target_port, target_path);
+=====
+문제 35: service_entry 인자 개수 불일치
+=====
 
-// 리팩토링 후 (올바른 방식):
-let target_uri = format!("http://{}:{}{}", ctx.gateway_ip, target_port, target_path);
-```
+문제: this function takes 5 arguments but 4 arguments were supplied
+원인: BoundaryLogger::service_entry 시그니처는 (trace_id, from, service, method, params)인데 from 누락
+해결: from 파라미터 추가
+  self.logger.service_entry(trace_id, "API", "ContainerService", "create_container", &req.name);
+교훈: 기존 코드 참조하여 동일 패턴 적용
 
-**왜 gateway_ip 방식이 맞는가**:
-- easycicd-agent와 runtime 컨테이너는 **같은 Docker 네트워크** (easycicd_easycicd)
-- gateway_ip (172.19.0.1)는 해당 네트워크의 게이트웨이
-- 컨테이너 → 호스트 포트 접근: `http://gateway_ip:host_port`
-- `host.docker.internal`은 Linux에서 기본 지원 안 됨 (Docker Desktop 전용)
+=====
+문제 36: include_str! 삭제된 파일 참조
+=====
 
-**교훈**:
-1. **리팩토링 시 변수명 일관성 체크**: 파라미터명 변경 시 전체 함수 검토 필요
-2. **Docker 빌드 캐싱 주의**: 로컬 빌드 성공 ≠ Docker 빌드 성공
-3. **에러 위치 명시적 확인**: `cargo build 2>&1 | grep "error\[E"` 로 정확한 에러 위치 파악
-4. **Git 히스토리 활용**: 작동하던 코드와 비교하여 변경점 파악
-5. **Docker 네트워킹 이해**: 컨테이너 간 통신은 gateway_ip 또는 컨테이너명 사용
-
----
-
-## 문제 34: bollard 0.19 deprecated API (ListContainersOptions, RemoveContainerOptions)
-
-**날짜**: 2026-01-10
-**상황**: Container 기능 구현 후 배포 시 컴파일 에러
-
-**에러 메시지**:
-```
-error[E0061]: this function takes 0 arguments but 1 argument was supplied
-   --> src/docker/client.rs:XX:XX
-    |
-XX  |         self.docker.list_containers(Some(ListContainersOptions { ... }))
-    |                     ^^^^^^^^^^^^^^^ --------------- unexpected argument
-```
-
-**원인**:
-- bollard 0.19에서 `ListContainersOptions`와 `RemoveContainerOptions` API가 deprecated됨
-- 새 API는 builder 패턴 사용, 기존 struct 초기화 방식은 deprecated
-
-**해결**:
-```rust
-// 기존 (deprecated):
-let containers = self.docker.list_containers(Some(ListContainersOptions {
-    all: true,
-    ..Default::default()
-})).await?;
-
-// 해결: #[allow(deprecated)] 추가하여 기존 방식 유지
-#[allow(deprecated)]
-pub async fn list_containers(&self) -> Result<Vec<ContainerInfo>> {
-    let containers = self.docker.list_containers(Some(ListContainersOptions {
-        all: true,
-        ..Default::default()
-    })).await?;
-    // ...
-}
-```
-
-**교훈**:
-1. **크레이트 업데이트 시 CHANGELOG 확인**: deprecated API 파악
-2. **#[allow(deprecated)]**: 임시로 deprecated 경고 무시 가능
-3. **builder 패턴 마이그레이션**: 향후 새 API로 전환 필요
-
----
-
-## 문제 35: BoundaryLogger service_entry 인자 개수 불일치
-
-**날짜**: 2026-01-10
-**상황**: ContainerService 구현 후 컴파일 에러
-
-**에러 메시지**:
-```
-error[E0061]: this function takes 5 arguments but 4 arguments were supplied
-   --> src/application/services/container_service.rs:XX:XX
-    |
-XX  |         self.logger.service_entry(trace_id, "ContainerService", "create_container", &req.name);
-    |                     ^^^^^^^^^^^^^ expected 5 arguments
-```
-
-**원인**:
-- `BoundaryLogger::service_entry` 시그니처: `(trace_id, from, service, method, params)` - 5개 인자
-- 4개만 전달함 (`from` 파라미터 누락)
-
-**해결**:
-```rust
-// 잘못된 호출 (4개 인자):
-self.logger.service_entry(trace_id, "ContainerService", "create_container", &req.name);
-
-// 올바른 호출 (5개 인자):
-self.logger.service_entry(trace_id, "API", "ContainerService", "create_container", &req.name);
-//                                  ^^^^^ "from" 파라미터 추가
-```
-
-**교훈**:
-1. **함수 시그니처 확인**: 새 메서드 호출 전 정의 확인
-2. **일관된 로깅 패턴**: 기존 서비스 코드 참조하여 동일 패턴 적용
-3. **IDE 자동완성 활용**: 파라미터 힌트로 누락 방지
-
----
-
-## 문제 36: sqlx include_str! 삭제된 마이그레이션 파일 참조
-
-**날짜**: 2026-01-10
-**상황**: 마이그레이션 파일 통합 후 컴파일 에러
-
-**에러 메시지**:
-```
-error: couldn't read src/db/../../migrations/002_settings.sql: No such file or directory (os error 2)
-  --> src/db/queries.rs:XX:XX
-   |
-XX |         include_str!("../../migrations/002_settings.sql"),
-   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-```
-
-**원인**:
-- `include_str!`는 **컴파일 타임**에 파일을 읽음
-- 마이그레이션 파일들을 001_initial.sql로 통합 후 개별 파일 삭제
-- queries.rs의 migrate() 함수가 여전히 삭제된 파일 참조
-
-**해결**:
-```rust
-// 기존 (삭제된 파일 참조):
-pub async fn migrate(&self) -> Result<(), sqlx::Error> {
-    let migrations = vec![
-        include_str!("../../migrations/001_initial.sql"),
-        include_str!("../../migrations/002_settings.sql"),  // 파일 없음!
-        include_str!("../../migrations/003_deploy_logs.sql"), // 파일 없음!
-    ];
-    // ...
-}
-
-// 해결: 함수 본문 비우고 deprecated 표시
-pub async fn migrate(&self) -> Result<(), sqlx::Error> {
+문제: couldn't read src/db/../../migrations/002_settings.sql: No such file or directory
+원인:
+  - include_str!는 컴파일 타임에 파일 읽음
+  - 마이그레이션 파일을 001_initial.sql로 통합 후 개별 파일 삭제
+  - queries.rs의 migrate()가 여전히 삭제된 파일 참조
+해결: migrate() 함수 비우고 deprecated 표시
+  pub async fn migrate(&self) -> Result<(), sqlx::Error> {
     // NOTE: This function is deprecated. Use sqlx::migrate!() in main.rs instead.
-    // All migrations are consolidated into 001_initial.sql.
     Ok(())
-}
-```
+  }
+교훈: include_str! 특성 이해 (컴파일 타임 임베딩)
 
-**교훈**:
-1. **include_str! 특성**: 컴파일 타임 파일 임베딩, 런타임이 아님
-2. **마이그레이션 통합 시 참조 확인**: 코드에서 개별 파일 참조 제거 필요
-3. **sqlx::migrate!() 사용 권장**: main.rs에서 한 번만 실행
+=====
+문제 37: Migration 버전 충돌
+=====
 
----
+문제: migration 2 was previously applied but is missing in the resolved migrations
+원인:
+  - 기존 DB에 002, 003 적용 기록 존재 (_sqlx_migrations 테이블)
+  - migrations 폴더에서 해당 파일 삭제
+해결: DB 파일 삭제 후 재생성
+  sudo rm /data/easycicd/db.sqlite*
+교훈: 마이그레이션 통합은 신중하게, 개발 환경에서만 DB 삭제
 
-## 문제 37: Migration 버전 충돌 (이전 적용된 마이그레이션 누락)
+=====
+문제 38: SQLite DB 파일 생성 권한
+=====
 
-**날짜**: 2026-01-10
-**상황**: 마이그레이션 파일 통합 후 앱 실행 시 에러
+문제: Database(Sqlite(SqliteError { code: 14, message: "unable to open database file" }))
+원인: /data/easycicd/ 디렉토리 쓰기 권한 없음
+해결:
+  방법 1: sudo touch /data/easycicd/db.sqlite && sudo chmod 666 /data/easycicd/db.sqlite
+  방법 2: sudo chmod 777 /data/easycicd/
+교훈: Docker 볼륨 권한 주의, create_if_missing 한계 (디렉토리 쓰기 권한 필요)
 
-**에러 메시지**:
-```
-Error: error occurred while running migrations:
-migration 2 was previously applied but is missing in the resolved migrations
-```
+=====
+문제 39: 마이그레이션 파일 관리 복잡도
+=====
 
-**원인**:
-- 기존 DB에 002_settings.sql, 003_deploy_logs.sql이 적용된 기록 존재
-- `_sqlx_migrations` 테이블에 version 2, 3 레코드 있음
-- migrations 폴더에서 해당 파일 삭제됨
-- sqlx가 "이전에 적용된 마이그레이션이 사라짐" 에러 발생
+문제: 개발 단계에서 마이그레이션 파일 수정 시 지속적 충돌 (문제 31, 37 반복)
+원인: sqlx 마이그레이션 불변성 원칙이 개발에서 방해
+해결: 단일 001_initial.sql로 통합
+변경 사항:
+  1. 001_initial.sql에 모든 스키마 통합
+  2. 불필요한 파일 삭제 (002, 003)
+  3. reset-db.sh 스크립트 작성
+장점:
+  - 스키마 수정 시 001 파일만 편집하고 ./reset-db.sh -y 실행
+  - 마이그레이션 파일 1개로 관리
+  - DB 초기화 10초 이내
+교훈: 개발 단계는 단순함과 속도 우선, 001_initial.sql이 현재 스키마의 완전한 정의
 
-**해결**:
-```bash
-# DB 파일 완전 삭제 후 재생성
-sudo rm /data/easycicd/db.sqlite*
+=====
+문제 40: DB 경로 혼동 및 create_if_missing 누락
+=====
 
-# 또는 마이그레이션 기록 수동 삭제 (권장하지 않음)
-# sqlite3 /data/easycicd/db.sqlite "DELETE FROM _sqlx_migrations WHERE version > 1"
-```
+문제 1: "migration 2 was previously applied but is missing" 에러
+  새로 빌드한 이미지로 컨테이너 시작 시 계속 재시작
+원인:
+  - 새 Docker 이미지에는 001_initial.sql만 포함
+  - 기존 DB에 002, 003 적용 기록 존재
+근본 원인 발견:
+  - docker-compose.yml 볼륨 마운트: ./data:/data
+  - DB 실제 위치: /home/choho97/easycicd/data/easycicd/db.sqlite (프로젝트 디렉토리)
+  - 잘못 삭제한 경로: /data/easycicd/db.sqlite (시스템 루트)
+해결: rm -f /home/choho97/easycicd/data/easycicd/db.sqlite*
 
-**교훈**:
-1. **마이그레이션 통합은 신중하게**: 이미 적용된 마이그레이션 수정은 위험
-2. **개발 환경에서만 DB 삭제**: 프로덕션에서는 마이그레이션 기록 유지 필요
-3. **통합 시 순서**: 먼저 새 통합 마이그레이션 적용 → 기존 기록 정리 → 파일 삭제
+문제 2: "unable to open database file" (code: 14)
+원인: main.rs에서 create_if_missing(true) 누락
+해결:
+  use sqlx::sqlite::SqliteConnectOptions;
+  use std::str::FromStr;
+  let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
+  let pool = SqlitePool::connect_with(options).await?;
 
----
+문제 3: Docker 캐시로 인한 코드 미반영
+원인: docker compose restart는 기존 이미지 사용
+해결: 
+  cd agent && docker build -t choho97/lightweight-ci:latest .
+  docker compose down && docker compose up -d
 
-## 문제 38: SQLite DB 파일 생성 권한 오류
+교훈:
+  1. 볼륨 마운트 경로 정확히 파악 (./data:/data → 프로젝트의 ./data가 /data로 마운트)
+  2. create_if_missing(true) 옵션 필수
+  3. 코드 수정 후 반드시 재빌드 (restart는 이미지 재사용)
 
-**날짜**: 2026-01-10
-**상황**: DB 삭제 후 앱 재실행 시 에러
+=====
+문제 41: DB 초기화 후 고아 컨테이너 미정리
+=====
 
-**에러 메시지**:
-```
-Error: Database(Sqlite(SqliteError { code: 14, message: "unable to open database file" }))
-```
-
-**원인**:
-- `/data/easycicd/` 디렉토리 권한 문제
-- Docker 컨테이너가 새 DB 파일 생성 불가
-- `create_if_missing(true)` 옵션이 있어도 디렉토리 쓰기 권한 필요
-
-**해결**:
-```bash
-# 방법 1: 빈 DB 파일 미리 생성
-sudo touch /data/easycicd/db.sqlite
-sudo chmod 666 /data/easycicd/db.sqlite
-
-# 방법 2: 디렉토리 권한 수정
-sudo chmod 777 /data/easycicd/
-```
-
-**교훈**:
-1. **Docker 볼륨 권한**: 호스트-컨테이너 간 권한 불일치 주의
-2. **create_if_missing 한계**: 디렉토리 존재 및 쓰기 권한 필요
-3. **초기 설정 스크립트**: DB 디렉토리/파일 생성 자동화 권장
+문제: DB 초기화 후 Docker 컨테이너 남아있는데 Agent가 인식 못함
+증상:
+  - docker ps: container-test-nginx, container-httpbin-test 실행 중
+  - API 조회: [] 빈 배열
+  - UI에서 보이지 않고 제어 불가
+원인: synchronize_container_states()가 DB 항목만 체크, Docker 컨테이너는 확인 안함
+발생 시나리오:
+  1. Container 기능으로 nginx, httpbin 생성 → DB 등록
+  2. reset-db.sh 실행 → DB만 초기화 (Docker 컨테이너는 그대로)
+  3. Agent 재시작 → DB에 정보 없음
+  4. 컨테이너는 실행 중이지만 관리 불가능 → 고아 컨테이너
+해결: Docker의 모든 컨테이너 확인하여 DB에 없으면 자동 삭제
+  1. DB 독립 컨테이너 목록 가져오기
+     let db_containers = context.container_repo.list().await?;
+     let valid_container_names: HashSet = ...
+  2. Docker의 모든 컨테이너 순회
+     - 프로젝트 컨테이너 (project-{id}-{slot}): project_id가 DB에 없으면 삭제
+     - 독립 컨테이너 (container-{name}): name이 DB에 없으면 삭제
+파일: agent/src/main.rs:252-300
+동작 확인:
+  docker logs easycicd-agent | grep Cleaning
+  → Cleaning up orphan standalone container: container-test-nginx (name 'test-nginx' not in DB)
+핵심 원칙: DB = Source of Truth, 양방향 동기화 (DB→Docker + Docker→DB)
+교훈: 상태 동기화는 DB와 실제 리소스 양방향 확인

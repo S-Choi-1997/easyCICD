@@ -97,13 +97,20 @@ impl ConfigBuilder {
             }
         }
 
-        // 2. 빌드 (Frontend만)
+        // 2. 빌드
+        let mut has_build_command = false;
         if plan.project_type != ProjectType::NodeJsBackend {
             for task in &plan.tasks {
                 if task.task_type == TaskType::Build {
                     commands.push(task.command.clone());
+                    has_build_command = true;
                 }
             }
+        }
+
+        // 2-1. JavaSpringBoot의 경우 빌드 명령어가 없으면 기본 gradle 빌드 추가
+        if plan.project_type == ProjectType::JavaSpringBoot && !has_build_command {
+            commands.push("gradle clean build".to_string());
         }
 
         // 3. 출력 복사 (프로젝트 타입에 따라)
@@ -128,7 +135,7 @@ impl ConfigBuilder {
             }
             ProjectType::JavaSpringBoot => {
                 // JAR 파일 찾아서 복사
-                "find build/libs target -name '*.jar' ! -name '*-plain.jar' -exec cp {} /output/app.jar \\; 2>/dev/null || true".to_string()
+                "find build/libs target -name '*.jar' ! -name '*-plain.jar' -exec cp {} /output/app.jar \\;".to_string()
             }
             ProjectType::PythonDjango => {
                 // Python 소스 전체 복사

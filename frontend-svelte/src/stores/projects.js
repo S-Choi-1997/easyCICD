@@ -92,14 +92,63 @@ export async function deleteProject(projectId) {
  * 프로젝트 상태 업데이트 (WebSocket 메시지 처리)
  */
 export function updateProjectFromWebSocket(data) {
-    if (data.type === 'BuildStatus') {
-        // 프로젝트 목록 갱신 (빌드 상태 변경 시)
-        loadProjects();
+    if (data.type === 'build_status') {
+        console.log('📡 [Projects Store] 빌드 상태 업데이트:', data);
+
+        // 프로젝트 목록을 직접 업데이트 (API 재호출 없이)
+        projects.update(projectList => {
+            return projectList.map(proj => {
+                if (proj.id === data.project_id) {
+                    console.log('📡 [Projects Store] 프로젝트 찾음, 상태 업데이트:', proj.name, data.status);
+                    return {
+                        ...proj,
+                        last_build_status: data.status,
+                        last_build_at: data.timestamp
+                    };
+                }
+                return proj;
+            });
+        });
 
         // 선택된 프로젝트 업데이트
         selectedProject.update(proj => {
             if (proj && proj.id === data.project_id) {
-                return { ...proj, last_build_status: data.status };
+                return {
+                    ...proj,
+                    last_build_status: data.status,
+                    last_build_at: data.timestamp
+                };
+            }
+            return proj;
+        });
+    } else if (data.type === 'deployment') {
+        console.log('📡 [Projects Store] 배포 상태 업데이트:', data);
+
+        // 배포 상태 업데이트
+        projects.update(projectList => {
+            return projectList.map(proj => {
+                if (proj.id === data.project_id) {
+                    console.log('📡 [Projects Store] 배포 상태 업데이트:', proj.name, data.status);
+                    return {
+                        ...proj,
+                        deployment_status: data.status, // 'deploying' | 'deployed' | 'failed'
+                        active_slot: data.slot,
+                        last_deployed_at: data.timestamp
+                    };
+                }
+                return proj;
+            });
+        });
+
+        // 선택된 프로젝트 업데이트
+        selectedProject.update(proj => {
+            if (proj && proj.id === data.project_id) {
+                return {
+                    ...proj,
+                    deployment_status: data.status,
+                    active_slot: data.slot,
+                    last_deployed_at: data.timestamp
+                };
             }
             return proj;
         });

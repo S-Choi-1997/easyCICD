@@ -7,6 +7,7 @@ use crate::events::Event;
 pub enum WsSubscription {
     Build(i64),
     Project(i64),
+    Container(i64),  // Standalone container subscription by container DB ID
     Global,
 }
 
@@ -32,6 +33,7 @@ impl WsConnections {
         match sub {
             WsSubscription::Build(id) => format!("build:{}", id),
             WsSubscription::Project(id) => format!("project:{}", id),
+            WsSubscription::Container(id) => format!("container:{}", id),
             WsSubscription::Global => "global".to_string(),
         }
     }
@@ -87,6 +89,12 @@ impl WsConnections {
             },
             Event::ContainerStatus { project_id, .. } => {
                 self.broadcast(WsSubscription::Project(*project_id), message).await;
+            },
+            Event::StandaloneContainerStatus { container_db_id, .. } => {
+                self.broadcast(WsSubscription::Container(*container_db_id), message).await;
+            },
+            Event::ContainerLog { container_db_id, .. } => {
+                self.broadcast(WsSubscription::Container(*container_db_id), message).await;
             },
             Event::Error { project_id, build_id, .. } => {
                 if let Some(bid) = build_id {

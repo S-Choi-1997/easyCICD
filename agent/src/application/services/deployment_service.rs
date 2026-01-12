@@ -97,15 +97,16 @@ where
 
         write_log!(format!("Starting deployment for build #{}", build.build_number));
 
-        // Update status to Deploying
-        self.logger.repo_call(trace_id, "DeploymentService", "BuildRepo", "update_status");
-        self.build_repo.update_status(build.id, BuildStatus::Deploying).await?;
-
-        self.logger.event_emit(trace_id, "DeploymentService", "BuildStatus::Deploying");
-        self.event_bus.emit(Event::BuildStatus {
-            build_id: build.id,
+        // Build is already successful at this point, now starting deployment
+        // Emit deployment status event
+        self.logger.event_emit(trace_id, "DeploymentService", "Deployment::Deploying");
+        self.event_bus.emit(Event::Deployment {
             project_id: project.id,
-            status: BuildStatus::Deploying,
+            project_name: project.name.clone(),
+            build_id: build.id,
+            status: "deploying".to_string(),
+            slot: project.get_inactive_slot(),
+            url: format!("http://{}:{}", "localhost", project.get_inactive_port()),
             timestamp: Event::now(),
         }).await;
 

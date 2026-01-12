@@ -77,7 +77,16 @@
       "Bash(sudo chmod:*)",
       "Bash(sudo touch:*)",
       "Bash(docker volume:*)",
-      "Bash(docker start:*)"
+      "Bash(docker start:*)",
+      "Bash(/root/.cargo/bin/cargo build --release)",
+      "Bash(redis-cli:*)",
+      "Bash(docker image inspect:*)",
+      "Bash(docker network:*)",
+      "Bash(./reset-db.sh)",
+      "Bash(./reset-db.sh:*)",
+      "Bash(sudo ls:*)",
+      "Bash(pgrep:*)",
+      "Bash(docker cp:*)"
     ]
   }
 }

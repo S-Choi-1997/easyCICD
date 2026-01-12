@@ -325,17 +325,21 @@ impl ContainerRepository for SqliteContainerRepository {
         // Allocate port
         let port = self.allocate_port().await?;
 
+        let persist_data_i64 = if container.persist_data { 1 } else { 0 };
+
         let result = sqlx::query(
             r#"
-            INSERT INTO containers (name, port, image, env_vars, command, status)
-            VALUES (?, ?, ?, ?, ?, 'stopped')
+            INSERT INTO containers (name, port, container_port, image, env_vars, command, persist_data, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'stopped')
             "#
         )
         .bind(&container.name)
         .bind(port)
+        .bind(container.container_port)
         .bind(&container.image)
         .bind(&container.env_vars)
         .bind(&container.command)
+        .bind(persist_data_i64)
         .execute(&self.pool)
         .await?;
 

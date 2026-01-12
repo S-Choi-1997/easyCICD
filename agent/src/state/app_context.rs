@@ -43,6 +43,7 @@ pub struct AppContext {
     pub container_service: Arc<
         ContainerService<
             SqliteContainerRepository,
+            BroadcastEventBus,
         >,
     >,
 
@@ -107,10 +108,11 @@ impl AppContext {
             logger.clone(),
         ));
 
-        let container_service = Arc::new(ContainerService::<SqliteContainerRepository>::new(
+        let container_service = Arc::new(ContainerService::<SqliteContainerRepository, BroadcastEventBus>::new(
             container_repo.clone(),
             docker.clone(),
             logger.clone(),
+            Arc::new(event_bus.clone()),
         ));
 
         Ok(Self {

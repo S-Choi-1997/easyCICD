@@ -51,6 +51,24 @@ pub enum Event {
         timestamp: String,
     },
 
+    // Standalone container events
+    #[serde(rename = "standalone_container_status")]
+    StandaloneContainerStatus {
+        container_db_id: i64,
+        container_name: String,
+        docker_id: Option<String>,
+        status: String,
+        timestamp: String,
+    },
+
+    #[serde(rename = "container_log")]
+    ContainerLog {
+        container_db_id: i64,
+        container_name: String,
+        line: String,
+        timestamp: String,
+    },
+
     #[serde(rename = "error")]
     Error {
         build_id: Option<i64>,
@@ -127,6 +145,30 @@ impl Event {
             container_id,
             slot,
             status,
+            timestamp: Self::now(),
+        }
+    }
+
+    pub fn standalone_container_status(
+        container_db_id: i64,
+        container_name: String,
+        docker_id: Option<String>,
+        status: String,
+    ) -> Self {
+        Event::StandaloneContainerStatus {
+            container_db_id,
+            container_name,
+            docker_id,
+            status,
+            timestamp: Self::now(),
+        }
+    }
+
+    pub fn container_log(container_db_id: i64, container_name: String, line: String) -> Self {
+        Event::ContainerLog {
+            container_db_id,
+            container_name,
+            line,
             timestamp: Self::now(),
         }
     }

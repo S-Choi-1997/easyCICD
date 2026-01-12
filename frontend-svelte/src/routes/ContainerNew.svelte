@@ -5,15 +5,22 @@
 
   let name = '';
   let image = '';
+  let containerPort = '';
   let command = '';
   let envVars = '';
-  let volumes = '';
+  let persistData = false;
   let creating = false;
   let error = '';
 
   async function createContainer() {
-    if (!name.trim() || !image.trim()) {
-      error = '이름과 이미지는 필수입니다';
+    if (!name.trim() || !image.trim() || !containerPort) {
+      error = '이름, 이미지, 컨테이너 포트는 필수입니다';
+      return;
+    }
+
+    const portNum = parseInt(String(containerPort));
+    if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+      error = '유효한 포트 번호를 입력하세요 (1-65535)';
       return;
     }
 
@@ -32,21 +39,16 @@
         });
       }
 
-      // Parse volumes
-      let parsedVolumes = [];
-      if (volumes.trim()) {
-        parsedVolumes = volumes.split('\n').map(v => v.trim()).filter(v => v);
-      }
-
       const response = await fetch(`${API_BASE}/containers`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: name.trim(),
           image: image.trim(),
+          container_port: portNum,
           command: command.trim() || null,
           env_vars: Object.keys(parsedEnvVars).length > 0 ? parsedEnvVars : null,
-          volumes: parsedVolumes.length > 0 ? parsedVolumes : null
+          persist_data: persistData
         })
       });
 
@@ -99,6 +101,12 @@
       </div>
 
       <div class="form-group">
+        <label for="containerPort">컨테이너 포트 *</label>
+        <input type="number" id="containerPort" bind:value={containerPort} placeholder="3000" class="form-input" min="1" max="65535" />
+        <span class="form-help">컨테이너 내부에서 사용할 포트 (외부 포트는 자동 할당)</span>
+      </div>
+
+      <div class="form-group">
         <label for="command">명령 (선택)</label>
         <input type="text" id="command" bind:value={command} placeholder="redis-server --appendonly yes" class="form-input" />
         <span class="form-help">컨테이너 시작 시 실행할 명령</span>
@@ -111,9 +119,11 @@
       </div>
 
       <div class="form-group">
-        <label for="volumes">볼륨 (선택)</label>
-        <textarea id="volumes" bind:value={volumes} rows="2" placeholder="/data/mysql:/var/lib/mysql" class="form-input"></textarea>
-        <span class="form-help">줄바꿈으로 구분, 호스트경로:컨테이너경로 형식</span>
+        <label class="checkbox-label">
+          <input type="checkbox" bind:checked={persistData} class="form-checkbox" />
+          <span>데이터 영구 저장</span>
+        </label>
+        <span class="form-help">체크하면 컨테이너 데이터가 /data 경로에 영구 저장됩니다</span>
       </div>
 
       <div class="form-actions">
@@ -192,6 +202,21 @@
     color: #6b7280;
     margin-top: 0.25rem;
     display: block;
+  }
+
+  .checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    font-weight: 500;
+    color: #374151;
+  }
+
+  .form-checkbox {
+    width: 1.125rem;
+    height: 1.125rem;
+    cursor: pointer;
   }
 
   .form-actions {
