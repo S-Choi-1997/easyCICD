@@ -103,7 +103,7 @@ pub async fn github_webhook(
         .and_then(|r| r.strip_prefix("refs/heads/"))
         .unwrap_or("main");
 
-    // Find matching project
+    // Find matching projects (can be multiple for same repo)
     let projects: Vec<crate::db::models::Project> = match ctx.project_repo.list().await {
         Ok(p) => p,
         Err(e) => {
@@ -119,27 +119,32 @@ pub async fn github_webhook(
         }
     };
 
-    let matching_project = projects.iter().find(|p| {
-        p.repo == webhook.repository.full_name && p.branch == branch
-    });
+    let matching_projects: Vec<&crate::db::models::Project> = projects.iter().filter(|p| {
+        // Extract owner/repo from stored URL (e.g., https://github.com/owner/repo.git -> owner/repo)
+        let repo_path = p.repo
+            .trim_end_matches(".git")
+            .trim_end_matches('/')
+            .split("github.com/")
+            .nth(1)
+            .unwrap_or("");
 
-    let project = match matching_project {
-        Some(p) => p,
-        None => {
-            info!(
-                "[{}] No matching project found for repo {} branch {}",
-                trace_id, webhook.repository.full_name, branch
-            );
-            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), 200);
-            return (
-                StatusCode::OK,
-                Json(WebhookResponse {
-                    message: "No matching project".to_string(),
-                    build_id: None,
-                }),
-            );
-        }
-    };
+        !repo_path.is_empty() && repo_path == webhook.repository.full_name && p.branch == branch
+    }).collect();
+
+    if matching_projects.is_empty() {
+        info!(
+            "[{}] No matching project found for repo {} branch {}",
+            trace_id, webhook.repository.full_name, branch
+        );
+        ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), 200);
+        return (
+            StatusCode::OK,
+            Json(WebhookResponse {
+                message: "No matching project".to_string(),
+                build_id: None,
+            }),
+        );
+    }
 
     // Check if files match path_filter
     let head_commit = match webhook.head_commit {
@@ -166,84 +171,110 @@ pub async fn github_webhook(
         .cloned()
         .collect();
 
-    let matches_filter = match_path_filter(&project.path_filter, &files_changed);
+    // Process each matching project
+    let mut build_ids = Vec::new();
+    let mut project_names = Vec::new();
 
-    if !matches_filter {
-        info!(
-            "[{}] Changed files do not match path filter: {}",
-            trace_id, project.path_filter
-        );
-        ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), 200);
-        return (
-            StatusCode::OK,
-            Json(WebhookResponse {
-                message: "Files do not match filter".to_string(),
-                build_id: None,
-            }),
-        );
-    }
+    for project in matching_projects {
+        let matches_filter = match_path_filter(&project.path_filter, &files_changed);
 
-    // Create build
-    let create_build = CreateBuild {
-        project_id: project.id,
-        commit_hash: head_commit.id.clone(),
-        commit_message: Some(head_commit.message.clone()),
-        author: Some(format!("{} <{}>", head_commit.author.name, head_commit.author.email)),
-    };
-
-    let build = match ctx.build_repo.create(create_build).await {
-        Ok(b) => b,
-        Err(e) => {
-            warn!("[{}] Failed to create build: {}", trace_id, e);
-            ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), 500);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(WebhookResponse {
-                    message: "Failed to create build".to_string(),
-                    build_id: None,
-                }),
+        if !matches_filter {
+            info!(
+                "[{}] Changed files do not match path filter for project {}: {}",
+                trace_id, project.name, project.path_filter
             );
+            continue;
         }
-    };
 
-    info!(
-        "[{}] Created build #{} for project {}",
-        trace_id, build.build_number, project.name
-    );
+        // Create build for this project
+        let create_build = CreateBuild {
+            project_id: project.id,
+            commit_hash: head_commit.id.clone(),
+            commit_message: Some(head_commit.message.clone()),
+            author: Some(format!("{} <{}>", head_commit.author.name, head_commit.author.email)),
+        };
 
-    // Enqueue build
-    ctx.build_queue.enqueue(project.id, build.id).await;
+        let build = match ctx.build_repo.create(create_build).await {
+            Ok(b) => b,
+            Err(e) => {
+                warn!("[{}] Failed to create build for project {}: {}", trace_id, project.name, e);
+                continue;
+            }
+        };
 
-    // Emit event
-    ctx.event_bus.emit(Event::BuildStatus {
-        build_id: build.id,
-        project_id: project.id,
-        status: BuildStatus::Queued,
-        timestamp: Event::now(),
-    }).await;
+        info!(
+            "[{}] Created build #{} for project {}",
+            trace_id, build.build_number, project.name
+        );
+
+        // Enqueue build
+        ctx.build_queue.enqueue(project.id, build.id).await;
+
+        // Emit event
+        ctx.event_bus.emit(Event::BuildStatus {
+            build_id: build.id,
+            project_id: project.id,
+            status: BuildStatus::Queued,
+            timestamp: Event::now(),
+        }).await;
+
+        build_ids.push(build.id);
+        project_names.push(project.name.clone());
+    }
 
     ctx.logger.api_exit(&trace_id, "POST", "/webhook/github", timer.elapsed_ms(), 200);
 
-    (
-        StatusCode::OK,
-        Json(WebhookResponse {
-            message: format!("Build #{} queued", build.build_number),
-            build_id: Some(build.id),
-        }),
-    )
+    // Return response
+    if build_ids.is_empty() {
+        (
+            StatusCode::OK,
+            Json(WebhookResponse {
+                message: "No matching path filters".to_string(),
+                build_id: None,
+            }),
+        )
+    } else if build_ids.len() == 1 {
+        (
+            StatusCode::OK,
+            Json(WebhookResponse {
+                message: format!("Build queued for {}", project_names[0]),
+                build_id: Some(build_ids[0]),
+            }),
+        )
+    } else {
+        (
+            StatusCode::OK,
+            Json(WebhookResponse {
+                message: format!("Builds queued for: {}", project_names.join(", ")),
+                build_id: Some(build_ids[0]), // Return first build ID for backward compatibility
+            }),
+        )
+    }
 }
 
 fn match_path_filter(pattern: &str, files: &[String]) -> bool {
+    // Empty pattern or "*" means match all files
+    if pattern.is_empty() || pattern.trim() == "*" {
+        return true;
+    }
+
     // Support comma-separated patterns: "src/**,tests/**"
     let patterns: Vec<&str> = pattern.split(',').map(|s| s.trim()).collect();
 
     // Build GlobSet from patterns
     let mut builder = GlobSetBuilder::new();
     for pat in patterns {
-        if let Ok(glob) = Glob::new(pat) {
+        // "frontend" 같은 디렉토리 패턴은 "frontend/**"로 자동 변환
+        let expanded_pat = if !pat.contains('*') && !pat.contains('?') {
+            format!("{}/**", pat.trim_end_matches('/'))
+        } else {
+            pat.to_string()
+        };
+
+        if let Ok(glob) = Glob::new(&expanded_pat) {
             builder.add(glob);
         } else {
-            warn!("Invalid glob pattern: {}", pat);
+            warn!("Invalid glob pattern: {}", expanded_pat);
             return false;
         }
     }

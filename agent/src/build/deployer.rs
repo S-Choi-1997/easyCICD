@@ -129,6 +129,7 @@ impl Deployer {
                 project.runtime_port as u16,
                 project.id,
                 &target_slot.to_string().to_lowercase(),
+                project.runtime_env_vars.as_deref(),
             )
             .await
             .context("Failed to start runtime container")?;
@@ -235,32 +236,42 @@ impl Deployer {
                 warn!("Health check failed: {}", e);
                 write_log!(format!("Health check failed: {}", e));
 
-                // TODO: TEMPORARILY DISABLED FOR DEBUGGING
-                // // Rollback: stop and remove new container
-                // self.docker.stop_container(&container_id).await.ok();
-                // self.docker.remove_container(&container_id).await.ok();
+                // Rollback: stop and remove failed container
+                write_log!("Rolling back: stopping failed container");
+                if let Err(stop_err) = self.docker.stop_container(&container_id).await {
+                    warn!("Failed to stop container during rollback: {}", stop_err);
+                }
+                if let Err(rm_err) = self.docker.remove_container(&container_id).await {
+                    warn!("Failed to remove container during rollback: {}", rm_err);
+                }
 
-                // // Clear container ID from database
-                // match target_slot {
-                //     Slot::Blue => {
-                //         self.state
-                //             .db
-                //             .update_project_blue_container(project.id, None)
-                //             .await?;
-                //     }
-                //     Slot::Green => {
-                //         self.state
-                //             .db
-                //             .update_project_green_container(project.id, None)
-                //             .await?;
-                //     }
-                // }
+                // Clear container ID from database
+                match target_slot {
+                    Slot::Blue => {
+                        if let Err(db_err) = self.state
+                            .db
+                            .update_project_blue_container(project.id, None)
+                            .await {
+                            warn!("Failed to clear blue container ID: {}", db_err);
+                        }
+                    }
+                    Slot::Green => {
+                        if let Err(db_err) = self.state
+                            .db
+                            .update_project_green_container(project.id, None)
+                            .await {
+                            warn!("Failed to clear green container ID: {}", db_err);
+                        }
+                    }
+                }
 
-                // // Update build status to Failed
-                // self.state
-                //     .db
-                //     .finish_build(build.id, BuildStatus::Failed)
-                //     .await?;
+                // Update build status to Failed
+                if let Err(db_err) = self.state
+                    .db
+                    .finish_build(build.id, BuildStatus::Failed)
+                    .await {
+                    warn!("Failed to update build status: {}", db_err);
+                }
 
                 self.state.emit_event(Event::Deployment {
                     project_id: project.id,
