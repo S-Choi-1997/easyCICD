@@ -1,6 +1,10 @@
 use async_trait::async_trait;
 use anyhow::Result;
-use crate::db::models::{Project, Build, CreateProject, UpdateProject, CreateBuild, Slot, BuildStatus, Container, CreateContainer, ContainerStatus};
+use crate::db::models::{
+    Project, Build, CreateProject, UpdateProject, CreateBuild, Slot, BuildStatus,
+    Container, CreateContainer, ContainerStatus,
+    User, CreateUser, Session, CreateSession,
+};
 
 /// Repository trait for Project operations
 #[async_trait]
@@ -112,4 +116,46 @@ pub trait ContainerRepository: Send + Sync {
 
     /// Release a port
     async fn release_port(&self, port: i32) -> Result<()>;
+}
+
+// ============================================================================
+// Authentication Repositories
+// ============================================================================
+
+/// Repository trait for User operations (Google OAuth)
+#[async_trait]
+pub trait UserRepository: Send + Sync {
+    /// Create or update a user from OAuth (upsert by google_id)
+    async fn upsert(&self, user: CreateUser) -> Result<User>;
+
+    /// Get user by ID
+    async fn get(&self, id: i64) -> Result<Option<User>>;
+
+    /// Get user by Google ID
+    async fn get_by_google_id(&self, google_id: &str) -> Result<Option<User>>;
+
+    /// Get user by email
+    async fn get_by_email(&self, email: &str) -> Result<Option<User>>;
+}
+
+/// Repository trait for Session operations
+#[async_trait]
+pub trait SessionRepository: Send + Sync {
+    /// Create a new session
+    async fn create(&self, session: CreateSession) -> Result<Session>;
+
+    /// Get session by ID (only if not expired)
+    async fn get(&self, id: &str) -> Result<Option<Session>>;
+
+    /// Get session with associated user (only if not expired)
+    async fn get_with_user(&self, id: &str) -> Result<Option<(Session, User)>>;
+
+    /// Delete session by ID
+    async fn delete(&self, id: &str) -> Result<()>;
+
+    /// Delete all expired sessions
+    async fn delete_expired(&self) -> Result<u64>;
+
+    /// Delete all sessions for a user
+    async fn delete_by_user(&self, user_id: i64) -> Result<()>;
 }

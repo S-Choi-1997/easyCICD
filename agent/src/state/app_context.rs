@@ -7,9 +7,13 @@ use crate::application::events::{BroadcastEventBus, Event};
 use crate::application::events::event_bus::EventBus;
 use crate::application::services::{BuildService, ContainerService, DeploymentService, ProjectService};
 use crate::docker::DockerClient;
-use crate::infrastructure::database::{SqliteBuildRepository, SqliteContainerRepository, SqliteProjectRepository, SqliteSettingsRepository};
+use crate::infrastructure::database::{
+    SqliteBuildRepository, SqliteContainerRepository, SqliteProjectRepository, SqliteSettingsRepository,
+    SqliteUserRepository, SqliteSessionRepository,
+};
 use crate::infrastructure::logging::BoundaryLogger;
 use crate::state::{BuildQueue, WsConnections};
+use crate::auth::OAuthConfig;
 
 /// AppContext - 서비스 기반 DI 컨테이너 (AppState 완전 대체)
 ///
@@ -53,6 +57,8 @@ pub struct AppContext {
     pub build_repo: Arc<SqliteBuildRepository>,
     pub settings_repo: Arc<SqliteSettingsRepository>,
     pub container_repo: Arc<SqliteContainerRepository>,
+    pub user_repo: Arc<SqliteUserRepository>,
+    pub session_repo: Arc<SqliteSessionRepository>,
 
     // Infrastructure
     pub event_bus: BroadcastEventBus,
@@ -64,6 +70,9 @@ pub struct AppContext {
     // Config
     pub gateway_ip: String,
     pub base_domain: Option<String>,
+
+    // OAuth config (optional)
+    pub oauth_config: Option<OAuthConfig>,
 }
 
 impl AppContext {
@@ -79,6 +88,11 @@ impl AppContext {
         let build_repo = Arc::new(SqliteBuildRepository::new(pool.clone()));
         let settings_repo = Arc::new(SqliteSettingsRepository::new(pool.clone()));
         let container_repo = Arc::new(SqliteContainerRepository::new(pool.clone()));
+        let user_repo = Arc::new(SqliteUserRepository::new(pool.clone()));
+        let session_repo = Arc::new(SqliteSessionRepository::new(pool.clone()));
+
+        // Load OAuth config (optional - don't fail if not configured)
+        let oauth_config = OAuthConfig::from_env().ok();
 
         // 2. Create Infrastructure components
         let logger = Arc::new(BoundaryLogger::new());
@@ -126,6 +140,8 @@ impl AppContext {
             build_repo,
             settings_repo,
             container_repo,
+            user_repo,
+            session_repo,
             event_bus,
             build_queue: Arc::new(BuildQueue::new()),
             ws_connections: Arc::new(WsConnections::new()),
@@ -133,6 +149,7 @@ impl AppContext {
             logger,
             gateway_ip,
             base_domain,
+            oauth_config,
         })
     }
 

@@ -6,6 +6,10 @@ services:
     container_name: easycicd-agent
     restart: unless-stopped
 
+    # Load OAuth and other secrets from .env file
+    env_file:
+      - .env
+
     environment:
       - TZ=Asia/Seoul
 

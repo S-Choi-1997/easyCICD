@@ -531,7 +531,7 @@ impl DockerClient {
         let _ = self.remove_container(&container_name).await;
 
         // Parse env vars from JSON if provided
-        let env: Option<Vec<String>> = env_vars.and_then(|s| {
+        let mut env: Vec<String> = env_vars.and_then(|s| {
             serde_json::from_str::<serde_json::Value>(s)
                 .ok()
                 .and_then(|v| {
@@ -541,7 +541,57 @@ impl DockerClient {
                             .collect()
                     })
                 })
-        });
+        }).unwrap_or_default();
+
+        // Add data directory env vars for known databases if persist_data is enabled
+        if persist_data {
+            let image_lower = image.to_lowercase();
+            if image_lower.contains("postgres") || image_lower.contains("timescale") {
+                // PostgreSQL/TimescaleDB: Set PGDATA to use /data directory
+                env.push("PGDATA=/data".to_string());
+                info!("Added PGDATA=/data for PostgreSQL/TimescaleDB");
+            } else if image_lower.contains("mysql") || image_lower.contains("mariadb") {
+                // MySQL/MariaDB: Set data directory
+                env.push("MYSQL_DATADIR=/data".to_string());
+                info!("Added MYSQL_DATADIR=/data for MySQL/MariaDB");
+            } else if image_lower.contains("mongo") {
+                // MongoDB: Set data directory
+                env.push("MONGODB_DBPATH=/data".to_string());
+                info!("Added MONGODB_DBPATH=/data for MongoDB");
+            } else if image_lower.contains("redis") {
+                // Redis: Set data directory and enable persistence
+                env.push("REDIS_DATA_DIR=/data".to_string());
+                info!("Added REDIS_DATA_DIR=/data for Redis");
+            } else if image_lower.contains("elasticsearch") || image_lower.contains("opensearch") {
+                // Elasticsearch/OpenSearch: Set data path
+                env.push("path.data=/data".to_string());
+                info!("Added path.data=/data for Elasticsearch/OpenSearch");
+            } else if image_lower.contains("cassandra") || image_lower.contains("scylla") {
+                // Cassandra/ScyllaDB: Set data directory
+                env.push("CASSANDRA_DATA_DIR=/data".to_string());
+                info!("Added CASSANDRA_DATA_DIR=/data for Cassandra/ScyllaDB");
+            } else if image_lower.contains("couchdb") {
+                // CouchDB: Set data directory
+                env.push("COUCHDB_DATA_DIR=/data".to_string());
+                info!("Added COUCHDB_DATA_DIR=/data for CouchDB");
+            } else if image_lower.contains("influxdb") {
+                // InfluxDB: Set data paths
+                env.push("INFLUXDB_DATA_DIR=/data".to_string());
+                env.push("INFLUXDB_META_DIR=/data/meta".to_string());
+                env.push("INFLUXDB_WAL_DIR=/data/wal".to_string());
+                info!("Added INFLUXDB_*_DIR=/data for InfluxDB");
+            } else if image_lower.contains("neo4j") {
+                // Neo4j: Data already in /data by default
+                env.push("NEO4J_DATA=/data".to_string());
+                info!("Added NEO4J_DATA=/data for Neo4j");
+            } else if image_lower.contains("rabbitmq") {
+                // RabbitMQ: Set data directory
+                env.push("RABBITMQ_MNESIA_BASE=/data".to_string());
+                info!("Added RABBITMQ_MNESIA_BASE=/data for RabbitMQ");
+            }
+        }
+
+        let env_option = if env.is_empty() { None } else { Some(env) };
 
         // Parse command if provided
         let cmd: Option<Vec<String>> = command.map(|c| {
@@ -564,7 +614,7 @@ impl DockerClient {
         let config = Config {
             image: Some(image.to_string()),
             cmd,
-            env,
+            env: env_option,
             host_config: Some(bollard::models::HostConfig {
                 port_bindings: Some({
                     let mut port_bindings = HashMap::new();

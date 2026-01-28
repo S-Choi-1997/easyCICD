@@ -560,3 +560,151 @@ impl ContainerRepository for SqliteContainerRepository {
         Ok(())
     }
 }
+
+// ============================================================================
+// Authentication Repositories
+// ============================================================================
+
+/// SQLite implementation of UserRepository
+#[derive(Clone)]
+pub struct SqliteUserRepository {
+    pool: SqlitePool,
+}
+
+impl SqliteUserRepository {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl UserRepository for SqliteUserRepository {
+    async fn upsert(&self, user: CreateUser) -> Result<User> {
+        // Insert or update based on google_id
+        sqlx::query(
+            r#"
+            INSERT INTO users (google_id, email, name, picture)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(google_id) DO UPDATE SET
+                email = excluded.email,
+                name = excluded.name,
+                picture = excluded.picture,
+                updated_at = datetime('now')
+            "#
+        )
+        .bind(&user.google_id)
+        .bind(&user.email)
+        .bind(&user.name)
+        .bind(&user.picture)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_by_google_id(&user.google_id).await?
+            .ok_or_else(|| anyhow::anyhow!("User not found after upsert"))
+    }
+
+    async fn get(&self, id: i64) -> Result<Option<User>> {
+        let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(user)
+    }
+
+    async fn get_by_google_id(&self, google_id: &str) -> Result<Option<User>> {
+        let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE google_id = ?")
+            .bind(google_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(user)
+    }
+
+    async fn get_by_email(&self, email: &str) -> Result<Option<User>> {
+        let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(user)
+    }
+}
+
+/// SQLite implementation of SessionRepository
+#[derive(Clone)]
+pub struct SqliteSessionRepository {
+    pool: SqlitePool,
+}
+
+impl SqliteSessionRepository {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl SessionRepository for SqliteSessionRepository {
+    async fn create(&self, session: CreateSession) -> Result<Session> {
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)"
+        )
+        .bind(&session.id)
+        .bind(session.user_id)
+        .bind(&session.expires_at)
+        .execute(&self.pool)
+        .await?;
+
+        self.get(&session.id).await?
+            .ok_or_else(|| anyhow::anyhow!("Session not found after create"))
+    }
+
+    async fn get(&self, id: &str) -> Result<Option<Session>> {
+        let session = sqlx::query_as::<_, Session>(
+            "SELECT * FROM sessions WHERE id = ? AND expires_at > datetime('now')"
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(session)
+    }
+
+    async fn get_with_user(&self, id: &str) -> Result<Option<(Session, User)>> {
+        // First get the session
+        let session = match self.get(id).await? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+
+        // Then get the user
+        let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
+            .bind(session.user_id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match user {
+            Some(u) => Ok(Some((session, u))),
+            None => Ok(None),
+        }
+    }
+
+    async fn delete(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM sessions WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn delete_expired(&self) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM sessions WHERE expires_at <= datetime('now')")
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    async fn delete_by_user(&self, user_id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM sessions WHERE user_id = ?")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}

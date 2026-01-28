@@ -481,3 +481,45 @@ pub struct CreateContainer {
     #[serde(default)]
     pub protocol_type: ProtocolType,  // tcp or http (기본값: tcp)
 }
+
+// ============================================================================
+// Authentication Models
+// ============================================================================
+
+/// User model (Google OAuth)
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct User {
+    pub id: i64,
+    pub google_id: String,
+    pub email: String,
+    pub name: String,
+    pub picture: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Create user request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateUser {
+    pub google_id: String,
+    pub email: String,
+    pub name: String,
+    pub picture: Option<String>,
+}
+
+/// Session model (server-side session)
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Session {
+    pub id: String,
+    pub user_id: i64,
+    pub expires_at: String,
+    pub created_at: String,
+}
+
+/// Create session request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateSession {
+    pub id: String,
+    pub user_id: i64,
+    pub expires_at: String,
+}

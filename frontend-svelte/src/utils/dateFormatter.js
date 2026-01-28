@@ -1,4 +1,4 @@
-import { formatDistanceToNow, format, parseISO, isValid } from 'date-fns';
+import { formatDistance, format, parseISO, isValid } from 'date-fns';
 import { ko } from 'date-fns/locale';
 
 /**
@@ -19,14 +19,14 @@ function parseDate(dateString) {
 /**
  * 상대 시간 표시 (예: "3분 전", "2시간 전")
  */
-export function formatRelativeTime(dateString) {
+export function formatRelativeTime(dateString, baseTime = new Date()) {
     if (!dateString) return '알 수 없음';
 
     try {
         const date = parseDate(dateString);
         if (!date) return '알 수 없음';
 
-        return formatDistanceToNow(date, { addSuffix: true, locale: ko });
+        return formatDistance(date, baseTime, { addSuffix: true, locale: ko });
     } catch (error) {
         console.error('Date parsing error:', error);
         return '알 수 없음';

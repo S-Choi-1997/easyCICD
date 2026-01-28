@@ -10,18 +10,21 @@ mod github;
 mod application;
 mod infrastructure;
 mod workers;
+mod auth;
 
 use anyhow::Result;
-use axum::{routing::{get, post}, Router};
+use axum::{middleware, routing::{get, post}, Router};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
+use tower_cookies::CookieManagerLayer;
 use tracing::{info, error};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use sqlx::SqlitePool;
 use state::AppContext;
 use build::run_build_worker;
-use api::{api_routes, github_webhook, ws_handler};
+use api::{api_routes, admin_routes, github_webhook, ws_handler, auth_routes};
+use api::middleware::require_auth;
 use proxy::run_reverse_proxy;
 use ws_broadcaster::run_ws_broadcaster;
 use docker::DockerClient;
@@ -29,6 +32,9 @@ use application::ports::repositories::ProjectRepository;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load environment variables from .env file
+    dotenvy::dotenv().ok();
+
     // Initialize tracing
     tracing_subscriber::registry()
         .with(
@@ -103,13 +109,29 @@ async fn main() -> Result<()> {
     synchronize_container_states(&context, &docker).await?;
     info!("Container state synchronization complete");
 
+    // Log OAuth config status
+    if context.oauth_config.is_some() {
+        info!("Google OAuth2 configured");
+    } else {
+        info!("Google OAuth2 not configured (GOOGLE_CLIENT_ID not set)");
+    }
+
     // Build API server routes
     let app = Router::new()
+        // Webhook (no auth required - GitHub sends requests)
         .route("/webhook/github", post(github_webhook))
+        // WebSocket (auth checked via session in handler if needed)
         .route("/ws", get(ws_handler))
-        .nest("/api", api_routes())
+        // Auth routes (no auth required)
+        .nest("/auth", auth_routes())
+        // Admin routes (no auth required - for initial setup like whitelist)
+        .nest("/admin", admin_routes())
+        // Protected API routes (auth middleware applied)
+        .nest("/api", api_routes()
+            .layer(middleware::from_fn_with_state(context.clone(), require_auth)))
         // Serve static files from /app/frontend directory
         .fallback_service(ServeDir::new("frontend"))
+        .layer(CookieManagerLayer::new())
         .layer(TraceLayer::new_for_http())
         .with_state(context.clone());
 
@@ -187,6 +209,16 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Start Session Cleanup worker
+    let session_cleanup = tokio::spawn({
+        let session_repo = context.session_repo.clone();
+        async move {
+            if let Err(e) = workers::run_session_cleanup(session_repo).await {
+                tracing::error!("Session cleanup worker error: {}", e);
+            }
+        }
+    });
+
     info!("All services started successfully");
 
     // Keep the application running
@@ -214,6 +246,9 @@ async fn main() -> Result<()> {
         }
         _ = container_cleanup => {
             info!("Container cleanup worker stopped");
+        }
+        _ = session_cleanup => {
+            info!("Session cleanup worker stopped");
         }
     }
 

@@ -8,10 +8,12 @@
   import Terminal from '../components/Terminal.svelte';
   import { fade } from 'svelte/transition';
   import { subscribe } from '../stores/websocket';
+  import { logout } from '../stores/auth';
 
   const API_BASE = '/api';
   let domain = null;
   let tcpDomain = null;
+  let serverIp = null;
   let containers = [];
   let containersLoading = true;
   let showAddMenu = false;
@@ -27,6 +29,7 @@
 
   // Container transition states
   let containerTransitions = new Map(); // { id: 'starting' | 'stopping' }
+  let now = new Date(); // 실시간 갱신을 위한 현재 시간
 
   // Error modal state
   let showErrorModal = false;
@@ -34,22 +37,12 @@
   let errorModalMessage = '';
   let errorModalDetails = '';
 
-  // Debug: Clear all transition states
-  function clearAllTransitions() {
-    console.log('🔧 [DEBUG] 모든 transition 상태 강제 초기화');
-    console.log('🔧 [DEBUG] 초기화 전:', Array.from(containerTransitions.entries()));
-    containerTransitions.clear();
-    containerTransitions = new Map(containerTransitions);
-    console.log('🔧 [DEBUG] 초기화 완료');
-  }
 
-  // Debug: Log current transition states
-  function logTransitionStates() {
-    console.log('🔍 [DEBUG] 현재 transition 상태:', Array.from(containerTransitions.entries()));
-  }
-
+  // 10초 간격으로 현재 시간 갱신 → 상대 시간 표시 실시간 갱신
+  let tickInterval;
   onMount(async () => {
-    await Promise.all([loadDomain(), loadTcpDomain(), loadProjects(), loadContainers()]);
+    await Promise.all([loadDomain(), loadTcpDomain(), loadServerIp(), loadProjects(), loadContainers()]);
+    tickInterval = setInterval(() => { now = new Date(); }, 10000);
 
     // Subscribe to WebSocket messages for real-time updates
     unsubscribeWs = subscribe('dashboard', (data) => {
@@ -156,6 +149,9 @@
     if (unsubscribeWs) {
       unsubscribeWs();
     }
+    if (tickInterval) {
+      clearInterval(tickInterval);
+    }
   });
 
   async function loadDomain() {
@@ -179,6 +175,16 @@
       }
     } catch (error) {
       console.error('TCP 도메인 로드 실패:', error);
+    }
+  }
+
+  async function loadServerIp() {
+    try {
+      const response = await fetch(`${API_BASE}/settings/server-ip`);
+      const data = await response.json();
+      serverIp = data.server_ip;
+    } catch (error) {
+      console.error('서버 IP 로드 실패:', error);
     }
   }
 
@@ -455,17 +461,25 @@
   }
 
   function getContainerUrl(container) {
-    // TCP 프로토콜인 경우 tcpDomain:port 형식으로 반환
-    if (container.protocol_type === 'tcp') {
-      const host = tcpDomain || 'localhost';
-      return `${host}:${container.port}`;
-    }
     // HTTP인 경우 기존 방식대로 서브도메인 사용
     // Remove protocol if present
     let baseDomain = domain || 'albl.cloud';
     baseDomain = baseDomain.replace(/^https?:\/\//, '');
     const protocol = baseDomain && !baseDomain.includes('localhost') ? 'https' : 'http';
     return `${protocol}://${container.name}.${baseDomain}/`;
+  }
+
+  function getTcpUrls(container) {
+    // TCP 컨테이너는 도메인과 IP 두 개를 반환
+    const urls = [];
+    if (tcpDomain) {
+      urls.push(`${tcpDomain}:${container.port}`);
+    }
+    // 서버 실제 IP 추가
+    if (serverIp && serverIp !== 'localhost') {
+      urls.push(`${serverIp}:${container.port}`);
+    }
+    return urls;
   }
 
   function isContainerTcp(container) {
@@ -505,11 +519,8 @@
       <h1>Easy CI/CD</h1>
     </a>
     <div class="header-actions">
-      <button class="btn btn-debug" on:click={logTransitionStates} title="현재 상태 출력">
-        상태확인
-      </button>
-      <button class="btn btn-debug" on:click={clearAllTransitions} title="모든 transition 상태 초기화">
-        상태초기화
+      <button class="btn btn-secondary" on:click={logout} title="로그아웃">
+        로그아웃
       </button>
       <a href="/settings" use:link class="btn btn-secondary">설정</a>
       <div class="dropdown">
@@ -603,11 +614,11 @@
                 <span>{project.branch}</span>
                 {#if project.updated_at}
                   <span>·</span>
-                  <span>{formatRelativeTime(project.updated_at)}</span>
+                  <span>{formatRelativeTime(project.updated_at, now)}</span>
                 {/if}
               </div>
               <a href="{getProjectUrl(project.name)}" target="_blank" rel="noopener noreferrer"
-                 class="item-url" on:click|stopPropagation style="font-size: 1.125rem;">
+                 class="item-url" on:click|stopPropagation>
                 {getProjectUrl(project.name)}
               </a>
             </div>
@@ -700,12 +711,14 @@
               </div>
               {#if container.status === 'running'}
                 {#if isContainerTcp(container)}
-                  <span class="item-url tcp-url" style="font-size: 1.125rem;">
-                    {getContainerUrl(container)}
-                  </span>
+                  <div class="tcp-urls">
+                    {#each getTcpUrls(container) as url}
+                      <span class="item-url tcp-url">{url}</span>
+                    {/each}
+                  </div>
                 {:else}
                   <a href="{getContainerUrl(container)}" target="_blank" rel="noopener noreferrer"
-                     class="item-url" on:click|stopPropagation style="font-size: 1.125rem;">
+                     class="item-url" on:click|stopPropagation>
                     {getContainerUrl(container)}
                   </a>
                 {/if}
@@ -800,7 +813,7 @@
           {/if}
           <div class="detail-row">
             <span class="detail-label">생성 시간:</span>
-            <span>{formatRelativeTime(currentContainer.created_at)}</span>
+            <span>{formatRelativeTime(currentContainer.created_at, now)}</span>
           </div>
         </div>
       </div>
@@ -911,7 +924,7 @@
   }
 
   .item-url {
-    font-size: 0.75rem;
+    font-size: 0.675rem;
     color: var(--primary);
     text-decoration: none;
     margin-top: 0.25rem;
@@ -922,9 +935,17 @@
     text-decoration: underline;
   }
 
+  .tcp-urls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-top: 0.25rem;
+  }
+
   .item-url.tcp-url {
     color: var(--gray-700);
     font-family: 'Courier New', monospace;
+    font-size: 0.7rem;
     background: var(--gray-100);
     padding: 0.125rem 0.5rem;
     border-radius: 0.25rem;

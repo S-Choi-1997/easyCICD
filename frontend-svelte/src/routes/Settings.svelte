@@ -15,6 +15,13 @@
   let savingTcp = false;
   let savingWebhook = false;
 
+  // Whitelist state
+  let allowedEmails = [];
+  let newEmail = '';
+  let addingEmail = false;
+  let removingEmail = null;
+  let whitelistError = '';
+
   onMount(async () => {
     await loadSettings();
   });
@@ -22,10 +29,11 @@
   async function loadSettings() {
     loading = true;
     try {
-      const [domainRes, tcpDomainRes, webhookUrlRes] = await Promise.all([
+      const [domainRes, tcpDomainRes, webhookUrlRes, emailsRes] = await Promise.all([
         fetch(`${API_BASE}/settings/domain`),
         fetch(`${API_BASE}/settings/tcp-domain`),
-        fetch(`${API_BASE}/settings/webhook-url`)
+        fetch(`${API_BASE}/settings/webhook-url`),
+        fetch(`/admin/allowed-emails`)
       ]);
 
       const domainData = await domainRes.json();
@@ -39,10 +47,66 @@
       const webhookUrlData = await webhookUrlRes.json();
       webhookUrlConfigured = webhookUrlData.configured || false;
       webhookUrl = webhookUrlData.webhook_url || '';
+
+      const emailsData = await emailsRes.json();
+      allowedEmails = emailsData.emails || [];
     } catch (error) {
       console.error('설정 로드 실패:', error);
     } finally {
       loading = false;
+    }
+  }
+
+  async function addEmail() {
+    if (!newEmail.trim()) return;
+
+    whitelistError = '';
+    addingEmail = true;
+
+    try {
+      const response = await fetch(`/admin/allowed-emails`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: newEmail.trim() }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        allowedEmails = data.emails || [];
+        newEmail = '';
+      } else {
+        whitelistError = data.error || '이메일 추가 실패';
+      }
+    } catch (error) {
+      whitelistError = '서버 오류';
+    } finally {
+      addingEmail = false;
+    }
+  }
+
+  async function removeEmail(email) {
+    whitelistError = '';
+    removingEmail = email;
+
+    try {
+      const response = await fetch(`/admin/allowed-emails`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        allowedEmails = data.emails || [];
+      } else {
+        whitelistError = data.error || '이메일 삭제 실패';
+      }
+    } catch (error) {
+      whitelistError = '서버 오류';
+    } finally {
+      removingEmail = null;
     }
   }
 
@@ -250,6 +314,66 @@
           </div>
         {/if}
       </div>
+
+      <hr class="divider" />
+
+      <div class="form-section">
+        <h3>접근 허용 이메일 (화이트리스트)</h3>
+        <p class="text-muted mb-2">
+          Google 로그인을 허용할 이메일 주소를 등록합니다.
+        </p>
+        <p class="text-muted mb-3">
+          <strong>비어있으면 모든 Google 계정으로 로그인 가능합니다.</strong><br>
+          이메일을 등록하면 등록된 이메일만 로그인할 수 있습니다.
+        </p>
+
+        {#if whitelistError}
+          <div class="alert alert-error mb-3">
+            {whitelistError}
+          </div>
+        {/if}
+
+        <div class="email-input-row">
+          <input
+            type="email"
+            class="form-input"
+            bind:value={newEmail}
+            placeholder="user@example.com"
+            on:keydown={(e) => e.key === 'Enter' && addEmail()}
+            disabled={addingEmail}
+          />
+          <button
+            on:click={addEmail}
+            class="btn btn-primary"
+            disabled={addingEmail || !newEmail.trim()}
+          >
+            {addingEmail ? '추가 중...' : '추가'}
+          </button>
+        </div>
+
+        {#if allowedEmails.length === 0}
+          <div class="alert alert-warning mt-3">
+            화이트리스트가 비어있습니다. 모든 Google 계정으로 로그인이 가능합니다.
+          </div>
+        {:else}
+          <div class="email-list mt-3">
+            <p class="text-muted mb-2">등록된 이메일 ({allowedEmails.length}개):</p>
+            {#each allowedEmails as email}
+              <div class="email-item">
+                <span class="email-address">{email}</span>
+                <button
+                  class="btn-remove"
+                  on:click={() => removeEmail(email)}
+                  disabled={removingEmail === email}
+                  title="삭제"
+                >
+                  {removingEmail === email ? '...' : '×'}
+                </button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
     {/if}
   </div>
 </div>
@@ -415,5 +539,73 @@
     border: none;
     border-top: 1px solid #e5e7eb;
     margin: 1.5rem 0;
+  }
+
+  .email-input-row {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .email-input-row .form-input {
+    flex: 1;
+  }
+
+  .email-list {
+    background: #f9fafb;
+    border-radius: 0.5rem;
+    padding: 1rem;
+  }
+
+  .email-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 0.75rem;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.375rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .email-item:last-child {
+    margin-bottom: 0;
+  }
+
+  .email-address {
+    font-family: monospace;
+    font-size: 0.875rem;
+    color: #374151;
+  }
+
+  .btn-remove {
+    background: transparent;
+    border: none;
+    color: #ef4444;
+    font-size: 1.25rem;
+    cursor: pointer;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    transition: all 0.2s;
+  }
+
+  .btn-remove:hover:not(:disabled) {
+    background: #fee2e2;
+  }
+
+  .btn-remove:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .alert-warning {
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fcd34d;
+  }
+
+  .alert-error {
+    background: #fee2e2;
+    color: #dc2626;
+    border: 1px solid #fca5a5;
   }
 </style>
