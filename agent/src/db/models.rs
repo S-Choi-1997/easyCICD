@@ -64,8 +64,9 @@ impl std::str::FromStr for BuildStatus {
             "Building" => Ok(BuildStatus::Building),
             "Success" => Ok(BuildStatus::Success),
             "Failed" => Ok(BuildStatus::Failed),
-            // 하위 호환성: 기존 Deploying 상태는 Success로 처리
-            "Deploying" => Ok(BuildStatus::Success),
+            // 하위 호환성: 기존 Deploying 상태는 미완료로 간주하여 Failed로 처리
+            // (배포 중 크래시/중단된 경우이므로 성공이 아님)
+            "Deploying" => Ok(BuildStatus::Failed),
             _ => Err(format!("Invalid build status: {}", s)),
         }
     }

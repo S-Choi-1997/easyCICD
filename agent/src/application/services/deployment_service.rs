@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use reqwest::Client;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -202,9 +203,9 @@ where
             }
         }
 
-        // Perform health check
+        // Perform health check (container running + HTTP response)
         let health_check_result = self
-            .perform_health_check(trace_id, project, build, &container_id)
+            .perform_health_check(trace_id, project, build, &container_id, target_port)
             .await;
 
         match health_check_result {
@@ -325,12 +326,37 @@ where
         }
     }
 
-    /// 컨테이너 헬스체크 수행 (컨테이너 실행 여부만 확인)
-    async fn perform_health_check(&self, trace_id: &str, project: &Project, build: &Build, container_id: &str) -> Result<()> {
-        let max_attempts = 10;
-        let retry_interval = Duration::from_secs(2);
+    /// 컨테이너 헬스체크 수행 (컨테이너 실행 + HTTP 응답 확인)
+    async fn perform_health_check(
+        &self,
+        trace_id: &str,
+        project: &Project,
+        build: &Build,
+        container_id: &str,
+        target_port: u16,
+    ) -> Result<()> {
+        let max_attempts = 15;  // 증가: HTTP 서버 시작 시간 고려
+        let retry_interval = Duration::from_secs(3);
 
-        info!("[{}] Starting container health check for container: {}", trace_id, container_id);
+        info!("[{}] Starting health check for container: {}", trace_id, container_id);
+
+        // HTTP client with timeout
+        let http_client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .context("Failed to create HTTP client")?;
+
+        // Construct health check URL
+        let health_path = if project.health_check_url.is_empty() || project.health_check_url == "/" {
+            "/".to_string()
+        } else if project.health_check_url.starts_with('/') {
+            project.health_check_url.clone()
+        } else {
+            format!("/{}", project.health_check_url)
+        };
+        let health_url = format!("http://{}:{}{}", self.docker.gateway_ip(), target_port, health_path);
+
+        info!("[{}] Health check URL: {}", trace_id, health_url);
 
         for attempt in 1..=max_attempts {
             self.logger.event_emit(trace_id, "DeploymentService", &format!("HealthCheck::Attempt{}/{}", attempt, max_attempts));
@@ -340,42 +366,88 @@ where
                 attempt,
                 max_attempts,
                 status: "Checking".to_string(),
-                url: format!("container://{}", container_id),
+                url: health_url.clone(),
                 timestamp: Event::now(),
             }).await;
 
-            // Check if container is running
+            // Step 1: Check if container is still running
             self.logger.external_call(trace_id, "DeploymentService", "Docker", "is_container_running");
             let is_running = self.docker.is_container_running(&container_id).await;
 
-            if is_running {
-                info!(
-                    "[{}] Container health check passed on attempt {}/{} - Container is running",
-                    trace_id, attempt, max_attempts
+            if !is_running {
+                warn!(
+                    "[{}] Container {} stopped unexpectedly on attempt {}/{}",
+                    trace_id, container_id, attempt, max_attempts
                 );
 
-                self.logger.event_emit(trace_id, "DeploymentService", "HealthCheck::Success");
+                // Container died - get logs for debugging
+                if let Ok(logs) = self.docker.get_container_logs(container_id, Some(50)).await {
+                    let last_logs: String = logs.into_iter().take(20).collect::<Vec<_>>().join("\n");
+                    warn!("[{}] Container logs before exit:\n{}", trace_id, last_logs);
+                }
+
                 self.event_bus.emit(Event::HealthCheck {
                     project_id: project.id,
                     build_id: build.id,
                     attempt,
                     max_attempts,
-                    status: "Success".to_string(),
-                    url: format!("container://{}", container_id),
+                    status: "ContainerStopped".to_string(),
+                    url: health_url.clone(),
                     timestamp: Event::now(),
                 }).await;
 
-                return Ok(());
-            } else {
-                warn!(
-                    "[{}] Container health check failed on attempt {}/{} - Container is not running",
-                    trace_id, attempt, max_attempts
-                );
+                anyhow::bail!("Container stopped unexpectedly during health check");
+            }
+
+            // Step 2: HTTP health check
+            self.logger.external_call(trace_id, "DeploymentService", "HTTP", "health_check");
+
+            match http_client.get(&health_url).send().await {
+                Ok(response) => {
+                    let status = response.status();
+
+                    if status.is_success() || status.as_u16() == 304 {
+                        info!(
+                            "[{}] Health check passed on attempt {}/{} - HTTP {} from {}",
+                            trace_id, attempt, max_attempts, status, health_url
+                        );
+
+                        self.logger.event_emit(trace_id, "DeploymentService", "HealthCheck::Success");
+                        self.event_bus.emit(Event::HealthCheck {
+                            project_id: project.id,
+                            build_id: build.id,
+                            attempt,
+                            max_attempts,
+                            status: "Success".to_string(),
+                            url: health_url.clone(),
+                            timestamp: Event::now(),
+                        }).await;
+
+                        return Ok(());
+                    } else {
+                        warn!(
+                            "[{}] Health check attempt {}/{} - HTTP {} (not 2xx)",
+                            trace_id, attempt, max_attempts, status
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "[{}] Health check attempt {}/{} - Connection error: {}",
+                        trace_id, attempt, max_attempts, e
+                    );
+                }
             }
 
             if attempt < max_attempts {
                 sleep(retry_interval).await;
             }
+        }
+
+        // All attempts failed - get final container logs
+        if let Ok(logs) = self.docker.get_container_logs(container_id, Some(50)).await {
+            let last_logs: String = logs.into_iter().take(30).collect::<Vec<_>>().join("\n");
+            warn!("[{}] Final container logs:\n{}", trace_id, last_logs);
         }
 
         self.logger.event_emit(trace_id, "DeploymentService", "HealthCheck::Failed");
@@ -385,11 +457,14 @@ where
             attempt: max_attempts,
             max_attempts,
             status: "Failed".to_string(),
-            url: format!("container://{}", container_id),
+            url: health_url.clone(),
             timestamp: Event::now(),
         }).await;
 
-        anyhow::bail!("Health check timed out after {} attempts", max_attempts)
+        anyhow::bail!(
+            "Health check failed after {} attempts. URL: {} - Application may have failed to start.",
+            max_attempts, health_url
+        )
     }
 
     /// 이전 빌드로 롤백
@@ -489,8 +564,8 @@ where
             }
         }
 
-        // Health check
-        self.perform_health_check(trace_id, project, target_build, &container_id).await?;
+        // Health check (container running + HTTP response)
+        self.perform_health_check(trace_id, project, target_build, &container_id, deploy_port).await?;
 
         info!("[{}] Health check passed, switching to {} slot", trace_id, deploy_slot);
 

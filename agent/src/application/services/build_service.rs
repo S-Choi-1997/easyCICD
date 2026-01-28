@@ -63,6 +63,7 @@ where
     /// 빌드 실행
     pub async fn execute_build(&self, trace_id: &str, build_id: i64) -> Result<PathBuf> {
         let timer = Timer::start();
+        let build_start_time = std::time::SystemTime::now();  // 빌드 시작 시간 기록 (산출물 검증용)
         self.logger.service_entry(trace_id, "API", "BuildService", "execute_build", &build_id);
 
         // Get build
@@ -102,7 +103,14 @@ where
         let cache_path = PathBuf::from("/data/cache").join(&project.cache_type);
         let log_path = PathBuf::from(&build.log_path);
 
-        // Create directories (workspace removed)
+        // Clean output directory before build (prevent stale artifacts from previous builds)
+        if output_path.exists() {
+            info!("[{}] Cleaning existing output directory: {}", trace_id, output_path.display());
+            fs::remove_dir_all(&output_path).await
+                .context("Failed to clean output directory")?;
+        }
+
+        // Create fresh directories
         fs::create_dir_all(&output_path).await.context("Failed to create output directory")?;
         fs::create_dir_all(&cache_path).await.context("Failed to create cache directory")?;
         fs::create_dir_all(log_path.parent().unwrap()).await.context("Failed to create log directory")?;
@@ -167,20 +175,30 @@ where
 
         // 프로젝트 타입에 따라 출력물 복사 명령어 자동 생성
         // build_command에 이미 /output/ 복사가 포함되어 있으면 중복 방지를 위해 스킵
+        // 중요: fallback으로 전체 소스 복사하는 패턴 제거 - 빌드 실패 시 명확하게 에러 반환
         let output_copy_command = if project.build_command.contains("/output/") {
             // 이미 복사 명령이 있음 (detector.rs에서 자동 생성된 경우)
             ""
         } else if is_gradle_project {
-            // Gradle: build/libs에서 jar 파일 복사 (plain jar 제외)
-            "find build/libs -name '*.jar' ! -name '*-plain.jar' -exec cp {} /output/app.jar \\; 2>/dev/null || cp -r . /output/"
+            // Gradle: JAR 파일 복사 - 없으면 에러 (fallback 제거)
+            "JAR_FILE=$(find build/libs -name '*.jar' ! -name '*-plain.jar' | head -1) && \
+             if [ -n \"$JAR_FILE\" ]; then cp \"$JAR_FILE\" /output/app.jar; \
+             else echo 'ERROR: No JAR file found in build/libs' >&2 && exit 1; fi"
         } else if is_maven_project {
-            // Maven: target에서 jar 파일 복사 (sources jar 제외)
-            "find target -name '*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' -exec cp {} /output/app.jar \\; 2>/dev/null || cp -r . /output/"
+            // Maven: JAR 파일 복사 - 없으면 에러 (fallback 제거)
+            "JAR_FILE=$(find target -name '*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -1) && \
+             if [ -n \"$JAR_FILE\" ]; then cp \"$JAR_FILE\" /output/app.jar; \
+             else echo 'ERROR: No JAR file found in target' >&2 && exit 1; fi"
         } else if is_node_project {
-            // Node.js: dist, build, out 순서로 시도, 실패시 전체 복사
-            "if [ -d dist ]; then cp -r dist/. /output/; elif [ -d build ]; then cp -r build/. /output/; elif [ -d out ]; then cp -r out/. /output/; else cp -r . /output/; fi"
+            // Node.js: 빌드 산출물 복사 - 산출물 디렉토리가 없으면 에러 (fallback 제거)
+            // Next.js는 .next/ 디렉토리 사용
+            "if [ -d dist ]; then cp -r dist/. /output/; \
+             elif [ -d build ]; then cp -r build/. /output/; \
+             elif [ -d out ]; then cp -r out/. /output/; \
+             elif [ -d .next ]; then cp -r .next/. /output/; \
+             else echo 'ERROR: No build output directory found (dist/, build/, out/, or .next/)' >&2 && exit 1; fi"
         } else {
-            // 기타: 전체 복사
+            // 기타 (Python 등): 전체 복사 유지
             "cp -r . /output/"
         };
 
@@ -254,8 +272,8 @@ where
         }
 
         if build_result.success {
-            // Validate build output exists
-            let validation_result = self.validate_build_output(&output_path, &project).await;
+            // Validate build output exists (with timestamp check for stale artifacts)
+            let validation_result = self.validate_build_output(&output_path, &project, build_start_time).await;
             if let Err(e) = validation_result {
                 warn!("[{}] Build output validation failed: {}", trace_id, e);
 
@@ -311,9 +329,18 @@ where
         }
     }
 
-    /// 빌드 산출물 검증
-    async fn validate_build_output(&self, output_path: &PathBuf, project: &Project) -> Result<()> {
-        // Check if output directory exists and is not empty
+    /// 빌드 산출물 검증 (강화된 버전)
+    /// - 파일 존재 여부
+    /// - 빌드 이후 수정된 파일 존재 여부 (stale artifact 방지)
+    /// - 최소 파일 크기 검증
+    /// - 프로젝트 타입별 필수 파일 검증
+    async fn validate_build_output(
+        &self,
+        output_path: &PathBuf,
+        project: &Project,
+        build_start_time: std::time::SystemTime,
+    ) -> Result<()> {
+        // Check if output directory exists
         if !output_path.exists() {
             anyhow::bail!("Output directory does not exist: {}", output_path.display());
         }
@@ -322,49 +349,126 @@ where
             .context("Failed to read output directory")?;
 
         let mut file_count = 0;
+        let mut total_size: u64 = 0;
         let mut has_index_html = false;
+        let mut has_jar_file = false;
+        let mut has_recent_files = false;
         let mut has_any_content = false;
 
         while let Some(entry) = entries.next_entry().await? {
             file_count += 1;
             has_any_content = true;
+
             let file_name = entry.file_name();
             let name = file_name.to_string_lossy();
 
-            // Check for index.html (common for web apps)
+            // Get file metadata
+            if let Ok(metadata) = entry.metadata().await {
+                total_size += metadata.len();
+
+                // Check if file was modified after build started
+                if let Ok(modified) = metadata.modified() {
+                    if modified >= build_start_time {
+                        has_recent_files = true;
+                    }
+                }
+            }
+
+            // Check for specific artifact types
             if name == "index.html" {
                 has_index_html = true;
             }
+            if name.ends_with(".jar") {
+                has_jar_file = true;
+            }
+            // nginx.conf는 우리가 생성한 것이므로 recent file로 카운트
+            if name == "nginx.conf" {
+                has_recent_files = true;
+            }
         }
 
+        // Validation 1: Must have content
         if !has_any_content {
             anyhow::bail!("Output directory is empty - build produced no files");
         }
 
-        // For nginx-based projects (static web apps), require index.html
-        if project.runtime_image.contains("nginx") && !has_index_html {
-            // Check in common build output subdirectories
-            let common_dirs = ["build", "dist", "out", "public"];
-            let mut found_index = false;
+        // Validation 2: Must have recently modified files (prevent stale artifacts)
+        if !has_recent_files {
+            anyhow::bail!(
+                "No files were modified during this build. Output may contain stale artifacts from a previous build."
+            );
+        }
 
-            for dir in common_dirs {
-                let sub_path = output_path.join(dir).join("index.html");
-                if sub_path.exists() {
-                    found_index = true;
-                    info!("Found index.html in {}/{}/", output_path.display(), dir);
-                    break;
+        // Validation 3: Minimum size check (prevent empty/stub files)
+        let build_image_lower = project.build_image.to_lowercase();
+        let runtime_image_lower = project.runtime_image.to_lowercase();
+
+        let min_size: u64 = if runtime_image_lower.contains("nginx") {
+            100  // HTML should be at least 100 bytes
+        } else if runtime_image_lower.contains("jre") || runtime_image_lower.contains("java") || runtime_image_lower.contains("openjdk") {
+            1000  // JAR should be at least 1KB
+        } else {
+            50   // Minimum for any artifact
+        };
+
+        if total_size < min_size {
+            anyhow::bail!(
+                "Build output too small ({} bytes). Expected at least {} bytes for this project type.",
+                total_size, min_size
+            );
+        }
+
+        // Validation 4: Project type specific checks
+
+        // For nginx (static web apps), require index.html
+        if runtime_image_lower.contains("nginx") {
+            if !has_index_html {
+                // Check in common subdirectories
+                let common_dirs = ["build", "dist", "out", "public", ".next"];
+                let mut found_index = false;
+
+                for dir in common_dirs {
+                    let sub_path = output_path.join(dir).join("index.html");
+                    if sub_path.exists() {
+                        found_index = true;
+                        info!("Found index.html in {}/{}/", output_path.display(), dir);
+                        break;
+                    }
                 }
-            }
 
-            if !found_index {
-                anyhow::bail!(
-                    "Static web app build missing index.html. Found {} files but no index.html in root or common build directories (build/, dist/, out/, public/)",
-                    file_count
-                );
+                if !found_index {
+                    anyhow::bail!(
+                        "Static web app build missing index.html. Found {} files ({} bytes) but no index.html",
+                        file_count, total_size
+                    );
+                }
             }
         }
 
-        info!("Build output validation passed: {} files in output directory", file_count);
+        // For JVM projects, require JAR file
+        if (build_image_lower.contains("gradle") || build_image_lower.contains("maven"))
+            && (runtime_image_lower.contains("jre") || runtime_image_lower.contains("java") || runtime_image_lower.contains("openjdk"))
+        {
+            let jar_path = output_path.join("app.jar");
+            if !jar_path.exists() && !has_jar_file {
+                anyhow::bail!(
+                    "Java project build missing JAR file. Expected app.jar in output directory."
+                );
+            }
+
+            // Verify JAR is not corrupted (check for ZIP magic bytes)
+            if jar_path.exists() {
+                let jar_content = fs::read(&jar_path).await?;
+                if jar_content.len() < 4 || &jar_content[0..4] != b"PK\x03\x04" {
+                    anyhow::bail!("app.jar appears to be corrupted (invalid ZIP header)");
+                }
+            }
+        }
+
+        info!(
+            "Build output validation passed: {} files, {} bytes total",
+            file_count, total_size
+        );
         Ok(())
     }
 
