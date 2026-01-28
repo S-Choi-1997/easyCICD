@@ -6,6 +6,9 @@ services:
     container_name: easycicd-agent
     restart: unless-stopped
 
+    environment:
+      - TZ=Asia/Seoul
+
     volumes:
       # DOOD: Mount Docker socket
       - /var/run/docker.sock:/var/run/docker.sock

@@ -113,47 +113,14 @@ impl ConfigBuilder {
             commands.push("gradle clean build".to_string());
         }
 
-        // 3. 출력 복사 (프로젝트 타입에 따라)
-        commands.push(Self::generate_copy_command(plan));
+        // 3. 출력 복사는 build_service.rs에서 build_image 기반으로 자동 처리
+        // (build_command에 /output/ 복사가 없는 경우에만 추가됨)
 
         if commands.is_empty() {
             return Err("워크플로우에서 빌드 커맨드를 찾을 수 없습니다".to_string());
         }
 
         Ok(commands.join(" && "))
-    }
-
-    fn generate_copy_command(plan: &ExecutionPlan) -> String {
-        match plan.project_type {
-            ProjectType::NodeJsBackend => {
-                // Backend: 소스 코드, 의존성, package.json 복사
-                "cp -r src node_modules package*.json /output/".to_string()
-            }
-            ProjectType::NodeJsFrontend => {
-                // Frontend: 빌드 결과물 복사
-                "cp -r dist/* /output/ 2>/dev/null || cp -r build/* /output/".to_string()
-            }
-            ProjectType::JavaSpringBoot => {
-                // JAR 파일 찾아서 복사
-                "find build/libs target -name '*.jar' ! -name '*-plain.jar' -exec cp {} /output/app.jar \\;".to_string()
-            }
-            ProjectType::PythonDjango => {
-                // Python 소스 전체 복사
-                "cp -r . /output/".to_string()
-            }
-            ProjectType::GolangApi => {
-                // 컴파일된 바이너리 복사
-                "cp main /output/ 2>/dev/null || cp app /output/".to_string()
-            }
-            ProjectType::RustCargo => {
-                // Rust 바이너리 복사
-                "cp target/release/* /output/ 2>/dev/null || true".to_string()
-            }
-            ProjectType::Unknown => {
-                // 기본: dist 또는 build 폴더
-                "cp -r dist/* /output/ 2>/dev/null || cp -r build/* /output/ 2>/dev/null || cp -r . /output/".to_string()
-            }
-        }
     }
 
     // =========================================================================

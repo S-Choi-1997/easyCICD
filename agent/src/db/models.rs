@@ -126,6 +126,10 @@ pub struct Project {
     pub health_check_url: String,
     pub runtime_port: i32,  // 컨테이너 내부에서 앱이 listen하는 포트
 
+    // Environment variables (JSON string)
+    pub build_env_vars: Option<String>,
+    pub runtime_env_vars: Option<String>,
+
     // Port allocation
     pub blue_port: i32,
     pub green_port: i32,
@@ -139,6 +143,9 @@ pub struct Project {
     // Status
     #[sqlx(try_from = "String")]
     pub deployment_status: DeploymentStatus,
+
+    // GitHub webhook
+    pub github_webhook_id: Option<i64>,
 
     // Timestamps
     pub created_at: String,
@@ -221,11 +228,33 @@ pub struct CreateProject {
     pub build_command: String,
     pub cache_type: String,
     pub working_directory: Option<String>,
+    pub build_env_vars: Option<String>,
 
     pub runtime_image: String,
     pub runtime_command: String,
     pub health_check_url: String,
     pub runtime_port: i32,
+    pub runtime_env_vars: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProject {
+    pub name: Option<String>,
+    pub repo: Option<String>,
+    pub path_filter: Option<String>,
+    pub branch: Option<String>,
+
+    pub build_image: Option<String>,
+    pub build_command: Option<String>,
+    pub cache_type: Option<String>,
+    pub working_directory: Option<String>,
+    pub build_env_vars: Option<String>,
+
+    pub runtime_image: Option<String>,
+    pub runtime_command: Option<String>,
+    pub health_check_url: Option<String>,
+    pub runtime_port: Option<i32>,
+    pub runtime_env_vars: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -299,6 +328,8 @@ impl From<String> for BuildStatus {
 pub enum ContainerStatus {
     Running,
     Stopped,
+    Pulling,   // 이미지 풀링 중
+    Starting,  // 컨테이너 시작 중
 }
 
 impl std::fmt::Display for ContainerStatus {
@@ -306,6 +337,8 @@ impl std::fmt::Display for ContainerStatus {
         match self {
             ContainerStatus::Running => write!(f, "running"),
             ContainerStatus::Stopped => write!(f, "stopped"),
+            ContainerStatus::Pulling => write!(f, "pulling"),
+            ContainerStatus::Starting => write!(f, "starting"),
         }
     }
 }
@@ -317,6 +350,8 @@ impl std::str::FromStr for ContainerStatus {
         match s {
             "running" => Ok(ContainerStatus::Running),
             "stopped" => Ok(ContainerStatus::Stopped),
+            "pulling" => Ok(ContainerStatus::Pulling),
+            "starting" => Ok(ContainerStatus::Starting),
             _ => Err(format!("Invalid container status: {}", s)),
         }
     }
@@ -350,6 +385,70 @@ impl From<String> for ContainerStatus {
     }
 }
 
+// Protocol type for containers
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ProtocolType {
+    #[serde(rename = "tcp")]
+    Tcp,
+    #[serde(rename = "http")]
+    Http,
+}
+
+impl Default for ProtocolType {
+    fn default() -> Self {
+        ProtocolType::Tcp
+    }
+}
+
+impl std::fmt::Display for ProtocolType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProtocolType::Tcp => write!(f, "tcp"),
+            ProtocolType::Http => write!(f, "http"),
+        }
+    }
+}
+
+impl std::str::FromStr for ProtocolType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "tcp" => Ok(ProtocolType::Tcp),
+            "http" => Ok(ProtocolType::Http),
+            _ => Err(format!("Invalid protocol type: {}", s)),
+        }
+    }
+}
+
+impl sqlx::Type<sqlx::Sqlite> for ProtocolType {
+    fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
+        <String as sqlx::Type<sqlx::Sqlite>>::type_info()
+    }
+}
+
+impl<'q> sqlx::Encode<'q, sqlx::Sqlite> for ProtocolType {
+    fn encode_by_ref(&self, args: &mut Vec<sqlx::sqlite::SqliteArgumentValue<'q>>) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        args.push(sqlx::sqlite::SqliteArgumentValue::Text(
+            std::borrow::Cow::Owned(self.to_string()),
+        ));
+        Ok(sqlx::encode::IsNull::No)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Sqlite> for ProtocolType {
+    fn decode(value: sqlx::sqlite::SqliteValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
+        let s: String = <String as sqlx::Decode<sqlx::Sqlite>>::decode(value)?;
+        s.parse().map_err(|e: String| Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)) as Box<dyn std::error::Error + Send + Sync>)
+    }
+}
+
+impl From<String> for ProtocolType {
+    fn from(s: String) -> Self {
+        s.parse().unwrap_or(ProtocolType::Tcp)
+    }
+}
+
 // Container model
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Container {
@@ -362,6 +461,8 @@ pub struct Container {
     pub env_vars: Option<String>,  // JSON string
     pub command: Option<String>,
     pub persist_data: i64,  // 0 or 1 (boolean)
+    #[sqlx(try_from = "String")]
+    pub protocol_type: ProtocolType,  // tcp or http
     #[sqlx(try_from = "String")]
     pub status: ContainerStatus,
     pub created_at: String,
@@ -377,4 +478,6 @@ pub struct CreateContainer {
     pub env_vars: Option<String>,  // JSON string
     pub command: Option<String>,
     pub persist_data: bool,  // 데이터 영구 저장 여부
+    #[serde(default)]
+    pub protocol_type: ProtocolType,  // tcp or http (기본값: tcp)
 }

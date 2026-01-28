@@ -257,14 +257,14 @@ where
             }
         }
 
-        // Remove all build output directories
-        if output_base.exists() {
-            if let Ok(mut entries) = fs::read_dir(&output_base).await {
-                while let Ok(Some(entry)) = entries.next_entry().await {
-                    if entry.path().is_dir() {
-                        if let Err(e) = fs::remove_dir_all(entry.path()).await {
-                            warn!("[{}] Failed to remove build output {:?}: {}", trace_id, entry.path(), e);
-                        }
+        // Remove only build output directories for this specific project
+        if let Ok(builds) = self.build_repo.list_by_project(id, 10000).await {
+            for build in builds {
+                let build_output_path = output_base.join(format!("build{}", build.id));
+                if build_output_path.exists() {
+                    info!("[{}] Removing build output: {:?}", trace_id, build_output_path);
+                    if let Err(e) = fs::remove_dir_all(&build_output_path).await {
+                        warn!("[{}] Failed to remove build output {:?}: {}", trace_id, build_output_path, e);
                     }
                 }
             }

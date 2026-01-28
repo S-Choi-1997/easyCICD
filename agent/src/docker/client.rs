@@ -3,12 +3,24 @@ use bollard::container::{
     Config, CreateContainerOptions, InspectContainerOptions, LogOutput, RemoveContainerOptions,
     RestartContainerOptions, StartContainerOptions, StopContainerOptions,
 };
+use bollard::exec::{CreateExecOptions, ResizeExecOptions, StartExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
 use bollard::Docker;
 use futures_util::StreamExt;
+use serde_json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+use tokio::time::timeout;
 use tracing::{debug, info, warn};
+
+/// Build container execution result
+pub struct BuildResult {
+    pub success: bool,
+    pub exit_code: i64,
+    pub logs: Vec<String>,
+    pub container_id: String,
+}
 
 #[derive(Clone)]
 pub struct DockerClient {
@@ -98,7 +110,25 @@ impl DockerClient {
 
     /// Pull image if not exists
     pub async fn ensure_image(&self, image: &str) -> Result<()> {
-        info!("Ensuring image: {}", image);
+        // Check if image already exists locally
+        let images = self.docker.list_images(None::<bollard::image::ListImagesOptions<String>>).await?;
+        let image_with_tag = if image.contains(':') {
+            image.to_string()
+        } else {
+            format!("{}:latest", image)
+        };
+        let image_exists = images.iter().any(|img| {
+            img.repo_tags.iter().any(|tag| {
+                tag == &image_with_tag
+            })
+        });
+
+        if image_exists {
+            info!("Image {} already exists locally", image);
+            return Ok(());
+        }
+
+        info!("Pulling image: {} (this may take a while...)", image);
 
         let mut stream = self.docker.create_image(
             Some(CreateImageOptions {
@@ -111,12 +141,28 @@ impl DockerClient {
 
         let mut has_error = false;
         let mut error_message = String::new();
+        let mut last_status = String::new();
 
         while let Some(result) = stream.next().await {
             match result {
                 Ok(info) => {
-                    if let Some(status) = info.status {
-                        debug!("Image pull: {}", status);
+                    if let Some(status) = &info.status {
+                        // Log progress for important status changes
+                        if status != &last_status {
+                            if status.contains("Pulling") || status.contains("Downloading") || status.contains("Extracting") {
+                                if let Some(id) = &info.id {
+                                    info!("[{}] Pulling {}: {} {}", image, id, status,
+                                        info.progress.as_deref().unwrap_or(""));
+                                }
+                            } else if status.contains("Pull complete") || status.contains("Download complete") {
+                                if let Some(id) = &info.id {
+                                    info!("[{}] Layer {} complete", image, id);
+                                }
+                            } else if status.contains("Digest") || status.contains("Status") {
+                                info!("[{}] {}", image, status);
+                            }
+                            last_status = status.clone();
+                        }
                     }
                     if let Some(error) = info.error {
                         has_error = true;
@@ -136,37 +182,33 @@ impl DockerClient {
             anyhow::bail!("Failed to pull image {}: {}", image, error_message);
         }
 
-        info!("Image {} ready", image);
+        info!("Image {} pulled successfully", image);
         Ok(())
     }
 
-    /// Run build container
+    /// Run build container (git clone happens inside container)
+    /// Returns BuildResult with success/failure status and logs
     pub async fn run_build_container(
         &self,
         image: &str,
         command: &str,
-        workspace_path: PathBuf,
         output_path: PathBuf,
         cache_path: PathBuf,
         cache_type: &str,
-        working_directory: &str,
-    ) -> Result<(String, Vec<String>)> {
+    ) -> Result<BuildResult> {
         self.ensure_image(image).await?;
 
         let container_name = format!("build-{}", uuid::Uuid::new_v4());
 
         // Convert container paths to host paths for DOOD
-        let host_workspace = self.to_host_path(&workspace_path);
         let host_output = self.to_host_path(&output_path);
         let host_cache = self.to_host_path(&cache_path);
 
         info!("Build container mounts:");
-        info!("  Workspace: {} (host: {})", workspace_path.display(), host_workspace.display());
         info!("  Output: {} (host: {})", output_path.display(), host_output.display());
         info!("  Cache: {} (host: {})", cache_path.display(), host_cache.display());
 
         let mut binds = vec![
-            format!("{}:/app", host_workspace.display()),
             format!("{}:/output", host_output.display()),
             // Mount Docker socket for Docker-outside-of-Docker (DOOD)
             "/var/run/docker.sock:/var/run/docker.sock".to_string(),
@@ -185,17 +227,10 @@ impl DockerClient {
             binds.push(format!("{}:{}", host_cache.display(), cache_mount));
         }
 
-        // Determine working directory
-        let work_dir = if working_directory.is_empty() {
-            "/app".to_string()
-        } else {
-            format!("/app/{}", working_directory.trim_start_matches('/'))
-        };
-
         let config = Config {
             image: Some(image.to_string()),
             cmd: Some(vec!["/bin/sh".to_string(), "-c".to_string(), command.to_string()]),
-            working_dir: Some(work_dir),
+            working_dir: Some("/".to_string()),  // Start at root, git clone creates /workspace
             host_config: Some(bollard::models::HostConfig {
                 binds: Some(binds),
                 auto_remove: Some(false),
@@ -225,7 +260,10 @@ impl DockerClient {
             .await
             .context("Failed to start container")?;
 
-        // Collect logs
+        // Collect logs with timeout (30 minutes max for long builds)
+        let build_timeout = Duration::from_secs(30 * 60);
+        let max_log_lines = 100_000;  // Prevent memory exhaustion
+
         let mut log_stream = self.docker.logs(
             &container_id,
             Some(bollard::container::LogsOptions::<String> {
@@ -237,22 +275,46 @@ impl DockerClient {
         );
 
         let mut logs = Vec::new();
-        while let Some(log_result) = log_stream.next().await {
-            match log_result {
-                Ok(output) => {
-                    let line = match output {
-                        LogOutput::StdOut { message } => String::from_utf8_lossy(&message).to_string(),
-                        LogOutput::StdErr { message } => String::from_utf8_lossy(&message).to_string(),
-                        _ => continue,
-                    };
-                    logs.push(line);
-                }
-                Err(e) => {
-                    warn!("Error reading logs: {}", e);
-                    logs.push(format!("ERROR: Failed to read logs: {}", e));
-                    break;
+        let log_collection = async {
+            while let Some(log_result) = log_stream.next().await {
+                match log_result {
+                    Ok(output) => {
+                        let line = match output {
+                            LogOutput::StdOut { message } => String::from_utf8_lossy(&message).to_string(),
+                            LogOutput::StdErr { message } => String::from_utf8_lossy(&message).to_string(),
+                            _ => continue,
+                        };
+                        // Print log immediately to stdout for real-time visibility
+                        println!("[BUILD {}] {}", container_id, line.trim_end());
+                        logs.push(line);
+
+                        // Prevent memory exhaustion
+                        if logs.len() >= max_log_lines {
+                            warn!("Log limit reached ({} lines), truncating", max_log_lines);
+                            logs.push(format!("... truncated after {} lines", max_log_lines));
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Error reading logs: {}", e);
+                        let error_msg = format!("ERROR: Failed to read logs: {}", e);
+                        println!("[BUILD-ERROR {}] {}", container_id, error_msg);
+                        logs.push(error_msg);
+                        break;
+                    }
                 }
             }
+        };
+
+        if timeout(build_timeout, log_collection).await.is_err() {
+            warn!("Build timeout after {} minutes for container {}", build_timeout.as_secs() / 60, container_id);
+            logs.push(format!("ERROR: Build timed out after {} minutes", build_timeout.as_secs() / 60));
+
+            // Force stop the container
+            let _ = self.docker.stop_container(
+                &container_id,
+                Some(StopContainerOptions { t: 5 }),
+            ).await;
         }
 
         info!("Collected {} lines of logs from container {}", logs.len(), container_id);
@@ -260,47 +322,42 @@ impl DockerClient {
             warn!("No logs collected from container {} - container may have exited immediately", container_id);
         }
 
-        // Wait for container to finish
-        let wait_result = self
-            .docker
-            .wait_container(&container_id, None::<bollard::container::WaitContainerOptions<&str>>)
-            .next()
-            .await;
+        // Wait for container to finish (with timeout)
+        let wait_timeout = Duration::from_secs(60);  // 1 minute to wait after logs
+        let wait_result = timeout(
+            wait_timeout,
+            self.docker
+                .wait_container(&container_id, None::<bollard::container::WaitContainerOptions<&str>>)
+                .next()
+        ).await;
 
         let exit_code = match wait_result {
-            Some(Ok(result)) => {
+            Ok(Some(Ok(result))) => {
                 info!("Container {} exited with code: {}", container_id, result.status_code);
                 result.status_code
             }
-            Some(Err(e)) => {
+            Ok(Some(Err(e))) => {
                 tracing::error!("Failed to wait for container {}: {}", container_id, e);
-                // Try to inspect container to get more info
-                if let Ok(inspect) = self.docker.inspect_container(&container_id, None::<bollard::container::InspectContainerOptions>).await {
-                    if let Some(state) = inspect.state {
-                        tracing::error!("Container state: running={:?}, exit_code={:?}, error={:?}",
-                            state.running, state.exit_code, state.error);
-                        if let Some(exit_code) = state.exit_code {
-                            return Ok((container_id, logs));
-                        }
-                    }
-                }
-                -1
+                // Try to inspect container to get exit code
+                self.get_container_exit_code(&container_id).await
             }
-            None => {
+            Ok(None) => {
                 tracing::error!("Container {} wait returned None (container may have been killed)", container_id);
-                // Try to inspect container to get more info
-                if let Ok(inspect) = self.docker.inspect_container(&container_id, None::<bollard::container::InspectContainerOptions>).await {
-                    if let Some(state) = inspect.state {
-                        tracing::error!("Container state: running={:?}, exit_code={:?}, error={:?}",
-                            state.running, state.exit_code, state.error);
-                    }
-                }
-                -1
+                self.get_container_exit_code(&container_id).await
+            }
+            Err(_) => {
+                tracing::error!("Timeout waiting for container {} to finish", container_id);
+                // Force stop the container
+                let _ = self.docker.stop_container(
+                    &container_id,
+                    Some(StopContainerOptions { t: 5 }),
+                ).await;
+                -2  // Special code for timeout
             }
         };
 
-        // Remove container
-        let _ = self
+        // Remove build container (cleanup)
+        if let Err(e) = self
             .docker
             .remove_container(
                 &container_id,
@@ -309,13 +366,17 @@ impl DockerClient {
                     ..Default::default()
                 }),
             )
-            .await;
-
-        if exit_code != 0 {
-            anyhow::bail!("Build failed with exit code: {}", exit_code);
+            .await
+        {
+            warn!("Failed to remove build container {}: {}", container_id, e);
         }
 
-        Ok((container_id, logs))
+        Ok(BuildResult {
+            success: exit_code == 0,
+            exit_code,
+            logs,
+            container_id,
+        })
     }
 
     /// Run runtime container (Blue/Green)
@@ -328,6 +389,7 @@ impl DockerClient {
         runtime_port: u16,
         project_id: i64,
         slot: &str,
+        env_vars: Option<&str>,
     ) -> Result<String> {
         self.ensure_image(image).await?;
 
@@ -352,11 +414,27 @@ impl DockerClient {
             }]),
         );
 
+        // Build environment variables list
+        let mut env = vec![format!("PORT={}", runtime_port)];
+
+        // Parse and add user-defined environment variables (JSON format)
+        if let Some(env_json) = env_vars {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(env_json) {
+                for (key, value) in parsed {
+                    let val_str = match value {
+                        serde_json::Value::String(s) => s,
+                        other => other.to_string().trim_matches('"').to_string(),
+                    };
+                    env.push(format!("{}={}", key, val_str));
+                }
+            }
+        }
+
         let config = Config {
             image: Some(image.to_string()),
             cmd: Some(vec!["/bin/sh".to_string(), "-c".to_string(), command.to_string()]),
             working_dir: Some("/app".to_string()),
-            env: Some(vec![format!("PORT={}", runtime_port)]),  // Apps can read PORT env var
+            env: Some(env),
             host_config: Some(bollard::models::HostConfig {
                 binds: Some(vec![format!("{}:/app:ro", host_output.display())]),
                 port_bindings: Some(port_bindings),
@@ -418,6 +496,22 @@ impl DockerClient {
     }
 
     /// Run standalone container (DB, Redis, etc.)
+    /// Check if image needs to be pulled (returns true if pull is needed)
+    pub async fn needs_image_pull(&self, image: &str) -> bool {
+        let images = match self.docker.list_images(None::<bollard::image::ListImagesOptions<String>>).await {
+            Ok(imgs) => imgs,
+            Err(_) => return true,
+        };
+        let image_with_tag = if image.contains(':') {
+            image.to_string()
+        } else {
+            format!("{}:latest", image)
+        };
+        !images.iter().any(|img| {
+            img.repo_tags.iter().any(|tag| tag == &image_with_tag)
+        })
+    }
+
     pub async fn run_standalone_container(
         &self,
         name: &str,
@@ -558,10 +652,10 @@ impl DockerClient {
         Ok(())
     }
 
-    /// Stop container
+    /// Stop container (logs error but doesn't fail for cleanup scenarios)
     pub async fn stop_container(&self, container_id: &str) -> Result<()> {
         info!("Stopping container: {}", container_id);
-        self.docker
+        if let Err(e) = self.docker
             .stop_container(
                 container_id,
                 Some(StopContainerOptions {
@@ -569,7 +663,10 @@ impl DockerClient {
                 }),
             )
             .await
-            .ok();
+        {
+            // Log the error but don't fail - container might already be stopped or removed
+            warn!("Failed to stop container {}: {} (may already be stopped)", container_id, e);
+        }
         Ok(())
     }
 
@@ -624,11 +721,10 @@ impl DockerClient {
         Ok(())
     }
 
-    /// Remove container
-    #[allow(deprecated)]
+    /// Remove container (logs error but doesn't fail for cleanup scenarios)
     pub async fn remove_container(&self, container_id: &str) -> Result<()> {
         info!("Removing container: {}", container_id);
-        self.docker
+        if let Err(e) = self.docker
             .remove_container(
                 container_id,
                 Some(RemoveContainerOptions {
@@ -637,7 +733,10 @@ impl DockerClient {
                 }),
             )
             .await
-            .ok();
+        {
+            // Log the error but don't fail - container might already be removed
+            warn!("Failed to remove container {}: {} (may already be removed)", container_id, e);
+        }
         Ok(())
     }
 
@@ -655,6 +754,20 @@ impl DockerClient {
         }
     }
 
+    /// Get container exit code by inspecting container state
+    async fn get_container_exit_code(&self, container_id: &str) -> i64 {
+        if let Ok(inspect) = self.docker.inspect_container(container_id, None::<InspectContainerOptions>).await {
+            if let Some(state) = inspect.state {
+                tracing::error!("Container state: running={:?}, exit_code={:?}, error={:?}",
+                    state.running, state.exit_code, state.error);
+                if let Some(code) = state.exit_code {
+                    return code;
+                }
+            }
+        }
+        -1  // Unknown exit code
+    }
+
     /// 컨테이너 로그 스트리밍 (실시간 로그)
     pub async fn stream_container_logs(&self, container_id: &str) -> Result<impl futures_util::Stream<Item = Result<Vec<u8>, bollard::errors::Error>>> {
         use bollard::container::LogsOptions;
@@ -663,7 +776,7 @@ impl DockerClient {
             follow: true,
             stdout: true,
             stderr: true,
-            tail: "100".to_string(),
+            tail: "all".to_string(),  // 전체 로그
             ..Default::default()
         });
 
@@ -676,5 +789,57 @@ impl DockerClient {
                 _ => Vec::new(),
             })
         }))
+    }
+
+    /// 컨테이너 내부에서 명령 실행 (exec 세션 생성)
+    pub async fn create_exec_session(
+        &self,
+        container_id: &str,
+        cmd: Vec<String>,
+    ) -> Result<(String, StartExecResults)> {
+        let exec_config = CreateExecOptions {
+            attach_stdin: Some(true),
+            attach_stdout: Some(true),
+            attach_stderr: Some(true),
+            tty: Some(true),
+            cmd: Some(cmd),
+            ..Default::default()
+        };
+
+        let exec_instance = self.docker
+            .create_exec(container_id, exec_config)
+            .await
+            .context("Failed to create exec instance")?;
+
+        let start_config = StartExecOptions {
+            detach: false,
+            tty: true,
+            ..Default::default()
+        };
+
+        let output = self.docker
+            .start_exec(&exec_instance.id, Some(start_config))
+            .await
+            .context("Failed to start exec")?;
+
+        Ok((exec_instance.id, output))
+    }
+
+    /// exec PTY 크기 조정
+    pub async fn resize_exec_tty(
+        &self,
+        exec_id: &str,
+        height: u16,
+        width: u16,
+    ) -> Result<()> {
+        self.docker
+            .resize_exec(
+                exec_id,
+                ResizeExecOptions { height, width },
+            )
+            .await
+            .context("Failed to resize exec TTY")?;
+
+        Ok(())
     }
 }

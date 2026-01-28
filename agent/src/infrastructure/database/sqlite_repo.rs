@@ -40,10 +40,10 @@ impl ProjectRepository for SqliteProjectRepository {
             r#"
             INSERT INTO projects (
                 name, repo, path_filter, branch,
-                build_image, build_command, cache_type, working_directory,
-                runtime_image, runtime_command, health_check_url, runtime_port,
+                build_image, build_command, cache_type, working_directory, build_env_vars,
+                runtime_image, runtime_command, health_check_url, runtime_port, runtime_env_vars,
                 blue_port, green_port, active_slot
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Blue')
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Blue')
             "#
         )
         .bind(&project.name)
@@ -54,10 +54,12 @@ impl ProjectRepository for SqliteProjectRepository {
         .bind(&project.build_command)
         .bind(&project.cache_type)
         .bind(&project.working_directory)
+        .bind(&project.build_env_vars)
         .bind(&project.runtime_image)
         .bind(&project.runtime_command)
         .bind(&project.health_check_url)
         .bind(&project.runtime_port)
+        .bind(&project.runtime_env_vars)
         .bind(blue_port)
         .bind(green_port)
         .execute(&self.pool)
@@ -95,6 +97,70 @@ impl ProjectRepository for SqliteProjectRepository {
         Ok(projects)
     }
 
+    async fn update(&self, id: i64, update: UpdateProject) -> Result<Project> {
+        // Get current project
+        let current = self.get(id).await?
+            .ok_or_else(|| anyhow::anyhow!("Project not found"))?;
+
+        // Merge with update values (use existing value if update is None)
+        let name = update.name.unwrap_or(current.name);
+        let repo = update.repo.unwrap_or(current.repo);
+        let path_filter = update.path_filter.unwrap_or(current.path_filter);
+        let branch = update.branch.unwrap_or(current.branch);
+        let build_image = update.build_image.unwrap_or(current.build_image);
+        let build_command = update.build_command.unwrap_or(current.build_command);
+        let cache_type = update.cache_type.unwrap_or(current.cache_type);
+        let working_directory = update.working_directory.or(current.working_directory);
+        let build_env_vars = update.build_env_vars.or(current.build_env_vars);
+        let runtime_image = update.runtime_image.unwrap_or(current.runtime_image);
+        let runtime_command = update.runtime_command.unwrap_or(current.runtime_command);
+        let health_check_url = update.health_check_url.unwrap_or(current.health_check_url);
+        let runtime_port = update.runtime_port.unwrap_or(current.runtime_port);
+        let runtime_env_vars = update.runtime_env_vars.or(current.runtime_env_vars);
+
+        sqlx::query(
+            r#"
+            UPDATE projects SET
+                name = ?,
+                repo = ?,
+                path_filter = ?,
+                branch = ?,
+                build_image = ?,
+                build_command = ?,
+                cache_type = ?,
+                working_directory = ?,
+                build_env_vars = ?,
+                runtime_image = ?,
+                runtime_command = ?,
+                health_check_url = ?,
+                runtime_port = ?,
+                runtime_env_vars = ?,
+                updated_at = datetime('now')
+            WHERE id = ?
+            "#
+        )
+        .bind(&name)
+        .bind(&repo)
+        .bind(&path_filter)
+        .bind(&branch)
+        .bind(&build_image)
+        .bind(&build_command)
+        .bind(&cache_type)
+        .bind(&working_directory)
+        .bind(&build_env_vars)
+        .bind(&runtime_image)
+        .bind(&runtime_command)
+        .bind(&health_check_url)
+        .bind(runtime_port)
+        .bind(&runtime_env_vars)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        // Return updated project
+        self.get(id).await?.ok_or_else(|| anyhow::anyhow!("Project not found after update"))
+    }
+
     async fn update_active_slot(&self, id: i64, slot: Slot) -> Result<()> {
         sqlx::query("UPDATE projects SET active_slot = ? WHERE id = ?")
             .bind(slot.to_string())
@@ -129,6 +195,15 @@ impl ProjectRepository for SqliteProjectRepository {
             .await?;
         Ok(())
     }
+
+    async fn update_webhook_id(&self, id: i64, webhook_id: Option<i64>) -> Result<()> {
+        sqlx::query("UPDATE projects SET github_webhook_id = ? WHERE id = ?")
+            .bind(webhook_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
 /// SQLite implementation of BuildRepository
@@ -156,13 +231,14 @@ impl BuildRepository for SqliteBuildRepository {
 
         let log_path = format!("/data/easycicd/logs/{}/{}.log", build.project_id, build_number);
         let deploy_log_path = format!("/data/easycicd/logs/{}/{}_deploy.log", build.project_id, build_number);
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
         let result = sqlx::query(
             r#"
             INSERT INTO builds (
                 project_id, build_number, commit_hash, commit_message, author,
-                status, log_path, deploy_log_path
-            ) VALUES (?, ?, ?, ?, ?, 'Queued', ?, ?)
+                status, log_path, deploy_log_path, started_at
+            ) VALUES (?, ?, ?, ?, ?, 'Queued', ?, ?, ?)
             "#
         )
         .bind(build.project_id)
@@ -172,6 +248,7 @@ impl BuildRepository for SqliteBuildRepository {
         .bind(&build.author)
         .bind(&log_path)
         .bind(&deploy_log_path)
+        .bind(&now)
         .execute(&self.pool)
         .await?;
 
@@ -213,6 +290,16 @@ impl BuildRepository for SqliteBuildRepository {
         Ok(builds)
     }
 
+    async fn get_latest_by_project(&self, project_id: i64) -> Result<Option<Build>> {
+        let build = sqlx::query_as::<_, Build>(
+            "SELECT * FROM builds WHERE project_id = ? ORDER BY started_at DESC LIMIT 1"
+        )
+        .bind(project_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(build)
+    }
+
     async fn list_recent(&self, limit: i64) -> Result<Vec<Build>> {
         let builds = sqlx::query_as::<_, Build>(
             "SELECT * FROM builds ORDER BY started_at DESC LIMIT ?"
@@ -233,10 +320,12 @@ impl BuildRepository for SqliteBuildRepository {
     }
 
     async fn finish(&self, id: i64, status: BuildStatus) -> Result<()> {
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         sqlx::query(
-            "UPDATE builds SET status = ?, finished_at = datetime('now') WHERE id = ?"
+            "UPDATE builds SET status = ?, finished_at = ? WHERE id = ?"
         )
         .bind(status.to_string())
+        .bind(&now)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -329,8 +418,8 @@ impl ContainerRepository for SqliteContainerRepository {
 
         let result = sqlx::query(
             r#"
-            INSERT INTO containers (name, port, container_port, image, env_vars, command, persist_data, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'stopped')
+            INSERT INTO containers (name, port, container_port, image, env_vars, command, persist_data, protocol_type, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'stopped')
             "#
         )
         .bind(&container.name)
@@ -340,6 +429,7 @@ impl ContainerRepository for SqliteContainerRepository {
         .bind(&container.env_vars)
         .bind(&container.command)
         .bind(persist_data_i64)
+        .bind(container.protocol_type.to_string())
         .execute(&self.pool)
         .await?;
 
@@ -424,7 +514,7 @@ impl ContainerRepository for SqliteContainerRepository {
     }
 
     async fn allocate_port(&self) -> Result<i32> {
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = chrono::Local::now().to_rfc3339();
 
         // Get all unavailable ports (allocated or used by system)
         let unavailable_ports: Vec<i32> = sqlx::query_scalar(

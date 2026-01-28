@@ -10,7 +10,7 @@ use tracing::error;
 
 use crate::state::AppContext;
 use crate::infrastructure::logging::{TraceContext, Timer};
-use crate::db::models::CreateContainer;
+use crate::db::models::{CreateContainer, ProtocolType};
 
 pub fn containers_routes() -> Router<AppContext> {
     Router::new()
@@ -19,6 +19,7 @@ pub fn containers_routes() -> Router<AppContext> {
         .route("/{id}/start", post(start_container))
         .route("/{id}/stop", post(stop_container))
         .route("/{id}/logs", get(get_logs))
+        .route("/{id}/terminal", get(super::terminal::container_terminal))
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +30,8 @@ pub struct CreateContainerRequest {
     pub env_vars: Option<serde_json::Value>,
     pub command: Option<String>,
     pub persist_data: Option<bool>,
+    #[serde(default)]
+    pub protocol_type: ProtocolType,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,6 +45,7 @@ pub struct ContainerResponse {
     pub env_vars: Option<serde_json::Value>,
     pub command: Option<String>,
     pub persist_data: bool,
+    pub protocol_type: String,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
@@ -59,6 +63,7 @@ impl From<crate::db::models::Container> for ContainerResponse {
             env_vars: c.env_vars.and_then(|s| serde_json::from_str(&s).ok()),
             command: c.command,
             persist_data: c.persist_data != 0,
+            protocol_type: c.protocol_type.to_string(),
             status: c.status.to_string(),
             created_at: c.created_at,
             updated_at: c.updated_at,
@@ -99,13 +104,33 @@ async fn create_container(
     let timer = Timer::start();
     ctx.logger.api_entry(&trace_id, "POST", "/api/containers", &req.name);
 
+    // Validate container name
+    let name = req.name.trim();
+    if name.is_empty() {
+        ctx.logger.api_exit(&trace_id, "POST", "/api/containers", timer.elapsed_ms(), 400);
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "컨테이너 이름은 필수입니다"}))).into_response();
+    }
+
+    // Name must contain only alphanumeric and hyphens
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        ctx.logger.api_exit(&trace_id, "POST", "/api/containers", timer.elapsed_ms(), 400);
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "컨테이너 이름은 영문, 숫자, 하이픈(-)만 사용할 수 있습니다"}))).into_response();
+    }
+
+    // Name must not start or end with hyphen
+    if name.starts_with('-') || name.ends_with('-') {
+        ctx.logger.api_exit(&trace_id, "POST", "/api/containers", timer.elapsed_ms(), 400);
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "컨테이너 이름은 하이픈(-)으로 시작하거나 끝날 수 없습니다"}))).into_response();
+    }
+
     let create_req = CreateContainer {
-        name: req.name,
+        name: name.to_string(),
         image: req.image,
         container_port: req.container_port,
         env_vars: req.env_vars.map(|v| v.to_string()),
         command: req.command,
         persist_data: req.persist_data.unwrap_or(false),
+        protocol_type: req.protocol_type,
     };
 
     match ctx.container_service.create_container(&trace_id, create_req).await {

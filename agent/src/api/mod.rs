@@ -5,6 +5,7 @@ mod containers;
 mod ws;
 mod settings;
 mod github_api;
+pub mod terminal;
 pub mod middleware;
 
 pub use webhook::github_webhook;
@@ -25,6 +26,10 @@ pub fn api_routes() -> Router<AppContext> {
         .route("/settings/webhook-secret", get(settings::get_webhook_secret))
         .route("/settings/domain", post(settings::set_domain))
         .route("/settings/domain", get(settings::get_domain))
+        .route("/settings/tcp-domain", post(settings::set_tcp_domain))
+        .route("/settings/tcp-domain", get(settings::get_tcp_domain))
+        .route("/settings/webhook-url", post(settings::set_webhook_url))
+        .route("/settings/webhook-url", get(settings::get_webhook_url))
         .route("/settings/github-pat", post(github_api::set_github_pat))
         .route("/settings/github-pat", delete(github_api::delete_github_pat))
         .route("/settings/github-pat-status", get(github_api::get_github_pat_status))

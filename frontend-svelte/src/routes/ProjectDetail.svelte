@@ -27,6 +27,12 @@
   let showBuildLogs = true;
   let showDeployLogs = true;
 
+  // Project edit mode
+  let editMode = false;
+  let editingProject = null;
+  let saving = false;
+  let saveError = '';
+
   onMount(async () => {
     await loadProject();
     await loadBuilds();
@@ -215,6 +221,115 @@
     };
     return colors[status] || 'bg-gray-100 text-gray-800';
   }
+
+  // --- Project Edit Functions ---
+  function startEdit() {
+    editingProject = { ...project };
+
+    // Convert JSON env vars to text format
+    if (editingProject.build_env_vars) {
+      try {
+        const parsed = JSON.parse(editingProject.build_env_vars);
+        editingProject.build_env_vars_text = Object.entries(parsed)
+          .map(([k, v]) => `${k}=${v}`)
+          .join('\n');
+      } catch {
+        editingProject.build_env_vars_text = '';
+      }
+    } else {
+      editingProject.build_env_vars_text = '';
+    }
+
+    if (editingProject.runtime_env_vars) {
+      try {
+        const parsed = JSON.parse(editingProject.runtime_env_vars);
+        editingProject.runtime_env_vars_text = Object.entries(parsed)
+          .map(([k, v]) => `${k}=${v}`)
+          .join('\n');
+      } catch {
+        editingProject.runtime_env_vars_text = '';
+      }
+    } else {
+      editingProject.runtime_env_vars_text = '';
+    }
+
+    editMode = true;
+    saveError = '';
+  }
+
+  function cancelEdit() {
+    editMode = false;
+    editingProject = null;
+    saveError = '';
+  }
+
+  function parseEnvVars(envStr) {
+    const result = {};
+    if (!envStr || !envStr.trim()) return result;  // Return empty object, not null
+    envStr.split('\n').forEach(line => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      const [key, ...valueParts] = trimmed.split('=');
+      if (key && valueParts.length > 0) {
+        result[key.trim()] = valueParts.join('=').trim();
+      }
+    });
+    return result;  // Always return object (empty or with entries)
+  }
+
+  async function saveProject() {
+    saving = true;
+    saveError = '';
+
+    try {
+      const updateData = {
+        name: editingProject.name,
+        repo: editingProject.repo,
+        branch: editingProject.branch,
+        path_filter: editingProject.path_filter,
+        build_image: editingProject.build_image,
+        build_command: editingProject.build_command,
+        cache_type: editingProject.cache_type,
+        working_directory: editingProject.working_directory || null,
+        runtime_image: editingProject.runtime_image,
+        runtime_command: editingProject.runtime_command,
+        health_check_url: editingProject.health_check_url,
+        runtime_port: editingProject.runtime_port,
+        build_env_vars: Object.keys(parseEnvVars(editingProject.build_env_vars_text)).length > 0
+          ? JSON.stringify(parseEnvVars(editingProject.build_env_vars_text))
+          : null,
+        runtime_env_vars: Object.keys(parseEnvVars(editingProject.runtime_env_vars_text)).length > 0
+          ? JSON.stringify(parseEnvVars(editingProject.runtime_env_vars_text))
+          : null,
+      };
+
+      const response = await fetch(`${API_BASE}/projects/${projectId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updateData)
+      });
+
+      if (response.ok) {
+        project = await response.json();
+        editMode = false;
+        editingProject = null;
+      } else {
+        // Try to parse as JSON, fallback to text
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const error = await response.json();
+          saveError = error.error || '저장에 실패했습니다';
+        } else {
+          const text = await response.text();
+          saveError = text || '저장에 실패했습니다';
+        }
+      }
+    } catch (error) {
+      saveError = error.message || '알 수 없는 오류가 발생했습니다';
+    } finally {
+      saving = false;
+    }
+  }
 </script>
 
 <div class="container">
@@ -227,10 +342,17 @@
     {#if loading}
       <div class="loading">로딩 중...</div>
     {:else if project}
-      <h1 style="font-size: 2rem; font-weight: 600; color: var(--gray-900); margin-bottom: 0.5rem;">{project.name}</h1>
-      <p class="text-muted">
-        {project.repo} ({project.branch})
-      </p>
+      <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+        <div>
+          <h1 style="font-size: 2rem; font-weight: 600; color: var(--gray-900); margin-bottom: 0.5rem;">{project.name}</h1>
+          <p class="text-muted">
+            {project.repo} ({project.branch})
+          </p>
+        </div>
+        <button on:click={startEdit} class="btn btn-secondary">
+          설정 수정
+        </button>
+      </div>
     {/if}
   </div>
 
@@ -268,17 +390,17 @@
           <li class="build-item" style="cursor: pointer;" on:click={() => showBuildDetail(build)}>
             <div class="build-info">
               <span class="build-number">#{build.build_number}</span>
-              <span class="status-badge status-{build.status.toLowerCase()}">
+              <span class="status-badge build-status {build.status.toLowerCase()}">
                 {build.status}
               </span>
               {#if build.deployed_slot}
-                <span class="status-badge" style="background: #f3e8ff; color: #7c3aed;">
-                  {build.deployed_slot} Slot
+                <span class="status-badge slot-badge {build.deployed_slot.toLowerCase()} {project && project.active_slot === build.deployed_slot && (build.deployed_slot === 'Blue' ? project.blue_container_id : project.green_container_id) ? 'running' : 'stopped'}">
+                  {build.deployed_slot}
                 </span>
               {/if}
             </div>
-            <div style="flex: 1; margin: 0 1rem;">
-              <div class="build-commit">
+            <div style="flex: 1; margin: 0 1rem; min-width: 0;">
+              <div class="build-commit" title="{build.commit_message || build.commit_hash}">
                 {build.commit_message || build.commit_hash}
               </div>
               {#if build.author}
@@ -422,4 +544,172 @@
       </div>
     {/if}
   </div>
+
+  <!-- Project Edit Modal -->
+  {#if editMode && editingProject}
+    <div class="modal-overlay" on:click={cancelEdit}>
+      <div class="modal-content" on:click|stopPropagation style="max-width: 700px; max-height: 85vh; overflow-y: auto;">
+        <div class="modal-header">
+          <h3>프로젝트 설정 수정</h3>
+          <button on:click={cancelEdit} class="btn btn-secondary btn-sm">닫기</button>
+        </div>
+
+        <div style="padding: 1.5rem;">
+          {#if saveError}
+            <div class="error-message" style="margin-bottom: 1rem; padding: 0.75rem; background: #fee2e2; color: #991b1b; border-radius: 0.375rem;">
+              {saveError}
+            </div>
+          {/if}
+
+          <!-- 기본 설정 -->
+          <div class="form-group">
+            <label for="edit-name">프로젝트 이름</label>
+            <input type="text" id="edit-name" bind:value={editingProject.name} class="form-input" />
+          </div>
+
+          <div class="form-group">
+            <label for="edit-branch">브랜치</label>
+            <input type="text" id="edit-branch" bind:value={editingProject.branch} class="form-input" />
+          </div>
+
+          <div class="form-group">
+            <label for="edit-path-filter">빌드 트리거 경로</label>
+            <input type="text" id="edit-path-filter" bind:value={editingProject.path_filter} class="form-input" />
+            <span class="form-help">변경된 파일 경로가 이 패턴과 일치할 때만 빌드 트리거 (* = 모든 파일)</span>
+          </div>
+
+          <div class="form-group">
+            <label for="edit-working-dir">빌드 실행 디렉토리</label>
+            <input type="text" id="edit-working-dir" bind:value={editingProject.working_directory} class="form-input" placeholder="(루트)" />
+            <span class="form-help">모노레포에서 특정 디렉토리에서 빌드할 때 사용</span>
+          </div>
+
+          <!-- 빌드 설정 -->
+          <h4 style="margin: 1.5rem 0 1rem; padding-top: 1rem; border-top: 1px solid var(--gray-200);">빌드 설정</h4>
+
+          <div class="form-group">
+            <label for="edit-build-image">빌드 이미지</label>
+            <input type="text" id="edit-build-image" bind:value={editingProject.build_image} class="form-input" />
+          </div>
+
+          <div class="form-group">
+            <label for="edit-build-command">빌드 명령어</label>
+            <input type="text" id="edit-build-command" bind:value={editingProject.build_command} class="form-input" />
+          </div>
+
+          <div class="form-group">
+            <label for="edit-build-env">빌드 환경변수</label>
+            <textarea
+              id="edit-build-env"
+              bind:value={editingProject.build_env_vars_text}
+              rows="3"
+              class="form-input"
+              style="font-family: monospace; font-size: 0.875rem;"
+              placeholder="KEY=VALUE (줄바꿈으로 구분)"
+            ></textarea>
+            <span class="form-help">기본 환경변수: CI=true, SKIP_PREFLIGHT_CHECK=true</span>
+          </div>
+
+          <!-- 런타임 설정 -->
+          <h4 style="margin: 1.5rem 0 1rem; padding-top: 1rem; border-top: 1px solid var(--gray-200);">런타임 설정</h4>
+
+          <div class="form-group">
+            <label for="edit-runtime-image">런타임 이미지</label>
+            <input type="text" id="edit-runtime-image" bind:value={editingProject.runtime_image} class="form-input" />
+          </div>
+
+          <div class="form-group">
+            <label for="edit-runtime-command">런타임 명령어</label>
+            <input type="text" id="edit-runtime-command" bind:value={editingProject.runtime_command} class="form-input" />
+          </div>
+
+          <div class="form-group">
+            <label for="edit-runtime-port">런타임 포트</label>
+            <input type="number" id="edit-runtime-port" bind:value={editingProject.runtime_port} class="form-input" style="width: 120px;" />
+            <span class="form-help">컨테이너 내부에서 앱이 리슨하는 포트</span>
+          </div>
+
+          <div class="form-group">
+            <label for="edit-health-check">헬스체크 URL</label>
+            <input type="text" id="edit-health-check" bind:value={editingProject.health_check_url} class="form-input" />
+          </div>
+
+          <div class="form-group">
+            <label for="edit-runtime-env">런타임 환경변수</label>
+            <textarea
+              id="edit-runtime-env"
+              bind:value={editingProject.runtime_env_vars_text}
+              rows="3"
+              class="form-input"
+              style="font-family: monospace; font-size: 0.875rem;"
+              placeholder="KEY=VALUE (줄바꿈으로 구분)"
+            ></textarea>
+            <span class="form-help">기본 환경변수: PORT=(런타임포트)</span>
+          </div>
+
+          <!-- 저장 버튼 -->
+          <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--gray-200);">
+            <button on:click={cancelEdit} class="btn btn-secondary">취소</button>
+            <button on:click={saveProject} class="btn btn-primary" disabled={saving}>
+              {saving ? '저장 중...' : '저장'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
+
+<style>
+  /* 빌드 상태 배지 - 연한 색상 (정보 전달용) */
+  .status-badge.build-status.success {
+    background: #dbeafe;
+    color: #1e40af;
+  }
+
+  .status-badge.build-status.building,
+  .status-badge.build-status.queued {
+    background: #fef3c7;
+    color: #92400e;
+  }
+
+  .status-badge.build-status.failed {
+    background: #fee2e2;
+    color: #991b1b;
+  }
+
+  .status-badge.build-status.deploying {
+    background: #fef3c7;
+    color: #92400e;
+  }
+
+  /* 슬롯 배지 - Stopped 상태 (어둡게) */
+  .status-badge.slot-badge.blue.stopped {
+    background: #93c5fd;
+    color: #1e3a8a;
+  }
+
+  .status-badge.slot-badge.green.stopped {
+    background: #86efac;
+    color: #065f46;
+  }
+
+  /* 슬롯 배지 - Running 상태 (밝게) */
+  .status-badge.slot-badge.blue.running {
+    background: #3b82f6;
+    color: white;
+  }
+
+  .status-badge.slot-badge.green.running {
+    background: #10b981;
+    color: white;
+  }
+
+  /* 커밋 메시지 한 줄로 제한 */
+  .build-commit {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 400px;
+  }
+</style>

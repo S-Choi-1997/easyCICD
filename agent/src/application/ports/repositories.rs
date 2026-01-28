@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use anyhow::Result;
-use crate::db::models::{Project, Build, CreateProject, CreateBuild, Slot, BuildStatus, Container, CreateContainer, ContainerStatus};
+use crate::db::models::{Project, Build, CreateProject, UpdateProject, CreateBuild, Slot, BuildStatus, Container, CreateContainer, ContainerStatus};
 
 /// Repository trait for Project operations
 #[async_trait]
@@ -17,6 +17,9 @@ pub trait ProjectRepository: Send + Sync {
     /// List all projects
     async fn list(&self) -> Result<Vec<Project>>;
 
+    /// Update a project (partial update)
+    async fn update(&self, id: i64, update: UpdateProject) -> Result<Project>;
+
     /// Update the active slot for a project
     async fn update_active_slot(&self, id: i64, slot: Slot) -> Result<()>;
 
@@ -28,6 +31,9 @@ pub trait ProjectRepository: Send + Sync {
 
     /// Delete a project
     async fn delete(&self, id: i64) -> Result<()>;
+
+    /// Update the GitHub webhook ID for a project
+    async fn update_webhook_id(&self, id: i64, webhook_id: Option<i64>) -> Result<()>;
 }
 
 /// Repository trait for Build operations
@@ -44,6 +50,9 @@ pub trait BuildRepository: Send + Sync {
 
     /// List builds for a specific project
     async fn list_by_project(&self, project_id: i64, limit: i64) -> Result<Vec<Build>>;
+
+    /// Get the latest build for a project
+    async fn get_latest_by_project(&self, project_id: i64) -> Result<Option<Build>>;
 
     /// List recent builds (all projects)
     async fn list_recent(&self, limit: i64) -> Result<Vec<Build>>;

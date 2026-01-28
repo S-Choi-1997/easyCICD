@@ -31,6 +31,10 @@
     let workingDirectory = '';
     let runtimePort = '';
     let runtimePortPlaceholder = '8080';
+
+    // Environment variables
+    let buildEnvVars = '';
+    let runtimeEnvVars = '';
     const tomlPlaceholder = `# 빌드 설정
 build_image = "node:20"
 build_command = "npm install && npm run build"
@@ -255,19 +259,40 @@ health_check_url = "${config.health_check_url || ''}"`;
             config = detectedConfig;
         }
 
+        // Parse environment variables (KEY=VALUE format, newline separated)
+        function parseEnvVars(envStr) {
+            const result = {};
+            if (!envStr || !envStr.trim()) return result;  // Return empty object, not null
+            envStr.split('\n').forEach(line => {
+                const trimmed = line.trim();
+                if (!trimmed) return;
+                const [key, ...valueParts] = trimmed.split('=');
+                if (key && valueParts.length > 0) {
+                    result[key.trim()] = valueParts.join('=').trim();
+                }
+            });
+            return result;  // Always return object (empty or with entries)
+        }
+
         const projectData = {
             name: projectName,
             repo: `https://github.com/${selectedRepo}.git`,
             path_filter: pathFilter || '*',
             branch: selectedBranch,
-            build_image: config.build_image,
-            build_command: config.build_command,
+            build_image: config.build_image || 'node:20',
+            build_command: config.build_command || 'npm install && npm run build',
             cache_type: config.cache_type || 'none',
             working_directory: workingDirectory || config.working_directory || null,
-            runtime_image: config.runtime_image,
+            build_env_vars: Object.keys(parseEnvVars(buildEnvVars)).length > 0
+              ? JSON.stringify(parseEnvVars(buildEnvVars))
+              : null,
+            runtime_image: config.runtime_image || 'nginx:alpine',
             runtime_command: config.runtime_command || '',
             health_check_url: config.health_check_url || '/',
-            runtime_port: runtimePort ? parseInt(runtimePort) : (config.runtime_port || parseInt(runtimePortPlaceholder) || 8080),
+            runtime_port: parseInt(runtimePort || config.runtime_port || runtimePortPlaceholder) || 8080,
+            runtime_env_vars: Object.keys(parseEnvVars(runtimeEnvVars)).length > 0
+              ? JSON.stringify(parseEnvVars(runtimeEnvVars))
+              : null,
         };
 
         try {
@@ -358,8 +383,10 @@ health_check_url = "${config.health_check_url || ''}"`;
                             type="text"
                             id="projectName"
                             bind:value={projectName}
+                            on:change={(e) => projectName = e.target.value}
                             placeholder="my-awesome-app"
                             class="form-input"
+                            autocomplete="off"
                         />
                         <span class="form-help">프로젝트를 구분할 이름입니다.</span>
                     </div>
@@ -519,6 +546,33 @@ health_check_url = "${config.health_check_url || ''}"`;
                             {#if tomlError}
                                 <div class="error-message">{tomlError}</div>
                             {/if}
+
+                            <!-- Environment Variables -->
+                            <h4 style="margin-top: 1.5rem;">환경변수 (선택)</h4>
+                            <div class="form-group">
+                                <label for="buildEnvVars">빌드 환경변수</label>
+                                <textarea
+                                    id="buildEnvVars"
+                                    bind:value={buildEnvVars}
+                                    class="form-input"
+                                    rows="3"
+                                    style="font-family: monospace; font-size: 0.875rem;"
+                                    placeholder="NODE_ENV=production&#10;REACT_APP_API_URL=https://api.example.com"
+                                ></textarea>
+                                <span class="form-help">빌드 시 사용할 환경변수. 줄바꿈으로 구분, KEY=VALUE 형식</span>
+                            </div>
+                            <div class="form-group">
+                                <label for="runtimeEnvVars">런타임 환경변수</label>
+                                <textarea
+                                    id="runtimeEnvVars"
+                                    bind:value={runtimeEnvVars}
+                                    class="form-input"
+                                    rows="3"
+                                    style="font-family: monospace; font-size: 0.875rem;"
+                                    placeholder="NODE_ENV=production&#10;DATABASE_URL=postgres://..."
+                                ></textarea>
+                                <span class="form-help">앱 실행 시 사용할 환경변수. 줄바꿈으로 구분, KEY=VALUE 형식</span>
+                            </div>
                         </div>
                     {/if}
 

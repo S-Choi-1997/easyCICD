@@ -6,22 +6,41 @@
 
   let domain = '';
   let domainConfigured = false;
+  let tcpDomain = '';
+  let tcpDomainConfigured = false;
+  let webhookUrl = '';
+  let webhookUrlConfigured = false;
   let loading = true;
   let saving = false;
+  let savingTcp = false;
+  let savingWebhook = false;
 
   onMount(async () => {
-    await loadDomain();
+    await loadSettings();
   });
 
-  async function loadDomain() {
+  async function loadSettings() {
     loading = true;
     try {
-      const response = await fetch(`${API_BASE}/settings/domain`);
-      const data = await response.json();
-      domainConfigured = data.configured || false;
-      domain = data.domain || '';
+      const [domainRes, tcpDomainRes, webhookUrlRes] = await Promise.all([
+        fetch(`${API_BASE}/settings/domain`),
+        fetch(`${API_BASE}/settings/tcp-domain`),
+        fetch(`${API_BASE}/settings/webhook-url`)
+      ]);
+
+      const domainData = await domainRes.json();
+      domainConfigured = domainData.configured || false;
+      domain = domainData.domain || '';
+
+      const tcpDomainData = await tcpDomainRes.json();
+      tcpDomainConfigured = tcpDomainData.configured || false;
+      tcpDomain = tcpDomainData.tcp_domain || '';
+
+      const webhookUrlData = await webhookUrlRes.json();
+      webhookUrlConfigured = webhookUrlData.configured || false;
+      webhookUrl = webhookUrlData.webhook_url || '';
     } catch (error) {
-      console.error('도메인 로드 실패:', error);
+      console.error('설정 로드 실패:', error);
     } finally {
       loading = false;
     }
@@ -47,6 +66,52 @@
       console.error(error);
     } finally {
       saving = false;
+    }
+  }
+
+  async function saveTcpDomain() {
+    if (!tcpDomain.trim()) {
+      return;
+    }
+
+    savingTcp = true;
+    try {
+      const response = await fetch(`${API_BASE}/settings/tcp-domain`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tcp_domain: tcpDomain.trim() }),
+      });
+
+      if (response.ok) {
+        tcpDomainConfigured = true;
+      }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      savingTcp = false;
+    }
+  }
+
+  async function saveWebhookUrl() {
+    if (!webhookUrl.trim()) {
+      return;
+    }
+
+    savingWebhook = true;
+    try {
+      const response = await fetch(`${API_BASE}/settings/webhook-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ webhook_url: webhookUrl.trim() }),
+      });
+
+      if (response.ok) {
+        webhookUrlConfigured = true;
+      }
+    } catch (error) {
+      console.error(error);
+    } finally {
+      savingWebhook = false;
     }
   }
 </script>
@@ -80,7 +145,7 @@
           서브도메인 라우팅에 사용할 기본 도메인을 설정합니다.
         </p>
         <p class="text-muted mb-3">
-          프로젝트별 서브도메인은 <code>{프로젝트명}-app.{기본도메인}</code> 형식으로 생성됩니다.<br>
+          프로젝트별 서브도메인은 <code>[프로젝트명]-app.[기본도메인]</code> 형식으로 생성됩니다.<br>
           예: <code>albl.cloud</code> 입력 시 → <code>myproject-app.albl.cloud</code>
         </p>
 
@@ -106,6 +171,82 @@
         {#if domainConfigured && !saving}
           <div class="alert alert-success mt-3">
             ✓ 도메인이 설정되어 있습니다: <strong>{domain}</strong>
+          </div>
+        {/if}
+      </div>
+
+      <hr class="divider" />
+
+      <div class="form-section">
+        <h3>TCP 도메인 설정</h3>
+        <p class="text-muted mb-2">
+          Redis, MySQL 등 TCP 프로토콜 서비스 접속에 사용할 도메인을 설정합니다.
+        </p>
+        <p class="text-muted mb-3">
+          DuckDNS 등으로 서버 IP에 연결한 도메인을 입력하세요.<br>
+          예: <code>myserver.duckdns.org</code> → <code>myserver.duckdns.org:15000</code>
+        </p>
+
+        <div class="form-group">
+          <label for="tcpDomain">TCP 도메인 (선택사항)</label>
+          <input
+            type="text"
+            id="tcpDomain"
+            class="form-input"
+            bind:value={tcpDomain}
+            placeholder="myserver.duckdns.org"
+          />
+        </div>
+
+        <button
+          on:click={saveTcpDomain}
+          class="btn btn-primary"
+          disabled={savingTcp}
+        >
+          {savingTcp ? '저장 중...' : 'TCP 도메인 저장'}
+        </button>
+
+        {#if tcpDomainConfigured && !savingTcp}
+          <div class="alert alert-success mt-3">
+            ✓ TCP 도메인이 설정되어 있습니다: <strong>{tcpDomain}</strong>
+          </div>
+        {/if}
+      </div>
+
+      <hr class="divider" />
+
+      <div class="form-section">
+        <h3>웹훅 URL 설정</h3>
+        <p class="text-muted mb-2">
+          GitHub 웹훅 등록에 사용할 URL을 설정합니다.
+        </p>
+        <p class="text-muted mb-3">
+          Cloudflare Tunnel 등을 통해 외부에서 접근 가능한 URL을 입력하세요.<br>
+          예: <code>https://cicd.example.com</code>
+        </p>
+
+        <div class="form-group">
+          <label for="webhookUrl">웹훅 URL (선택사항)</label>
+          <input
+            type="text"
+            id="webhookUrl"
+            class="form-input"
+            bind:value={webhookUrl}
+            placeholder="https://cicd.example.com"
+          />
+        </div>
+
+        <button
+          on:click={saveWebhookUrl}
+          class="btn btn-primary"
+          disabled={savingWebhook}
+        >
+          {savingWebhook ? '저장 중...' : '웹훅 URL 저장'}
+        </button>
+
+        {#if webhookUrlConfigured && !savingWebhook}
+          <div class="alert alert-success mt-3">
+            ✓ 웹훅 URL이 설정되어 있습니다: <strong>{webhookUrl}</strong>
           </div>
         {/if}
       </div>
@@ -270,4 +411,9 @@
     to { transform: rotate(360deg); }
   }
 
+  .divider {
+    border: none;
+    border-top: 1px solid #e5e7eb;
+    margin: 1.5rem 0;
+  }
 </style>

@@ -80,7 +80,7 @@ pub enum Event {
 
 impl Event {
     pub fn now() -> String {
-        chrono::Utc::now().to_rfc3339()
+        chrono::Local::now().to_rfc3339()
     }
 
     pub fn build_status(build_id: i64, project_id: i64, status: BuildStatus) -> Self {

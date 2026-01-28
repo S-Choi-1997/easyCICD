@@ -86,7 +86,30 @@
       "Bash(./reset-db.sh:*)",
       "Bash(sudo ls:*)",
       "Bash(pgrep:*)",
-      "Bash(docker cp:*)"
+      "Bash(docker cp:*)",
+      "Bash(docker stats:*)",
+      "Bash(docker-compose ps:*)",
+      "Bash(docker system:*)",
+      "Bash(docker rmi:*)",
+      "Bash(nc -zv:*)",
+      "Bash(sudo ufw status:*)",
+      "Bash(sudo iptables:*)",
+      "Bash(git checkout:*)",
+      "Bash(git clone:*)",
+      "Bash(sudo git remote:*)",
+      "Bash(timedatectl:*)",
+      "Bash(sudo timedatectl set-timezone:*)",
+      "Bash(docker events:*)",
+      "Bash(while read id)",
+      "Bash(do echo \"=== Project $id ===\")",
+      "Bash(while read id name)",
+      "Bash(do echo \"=== $name \\(ID: $id\\) ===\")",
+      "Bash(for:*)",
+      "Bash(docker-compose restart:*)",
+      "Bash(who:*)",
+      "Bash(sudo usermod:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(java -XshowSettings:properties -version:*)"
     ]
   }
 }

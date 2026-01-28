@@ -75,14 +75,42 @@ where
             return Ok(container);
         }
 
-        // Start Docker container
+        // Check if image needs to be pulled
+        let needs_pull = self.docker.needs_image_pull(&container.image).await;
+
+        if needs_pull {
+            // Update status to "pulling" and emit event
+            info!("[{}] Image {} not found locally, pulling...", trace_id, container.image);
+            self.container_repo.update_status(id, ContainerStatus::Pulling).await?;
+            let event = Event::standalone_container_status(
+                id,
+                container.name.clone(),
+                None,
+                "pulling".to_string(),
+            );
+            self.event_bus.emit(event).await;
+        } else {
+            // Update status to "starting" and emit event
+            info!("[{}] Image {} found locally, starting container...", trace_id, container.image);
+            self.container_repo.update_status(id, ContainerStatus::Starting).await?;
+            let event = Event::standalone_container_status(
+                id,
+                container.name.clone(),
+                None,
+                "starting".to_string(),
+            );
+            self.event_bus.emit(event).await;
+        }
+
+        // Start Docker container (this includes image pull if needed)
         self.logger.external_call(trace_id, "ContainerService", "Docker", "run_container");
         let docker_timer = Timer::start();
 
         let container_port = container.container_port.unwrap_or(container.port);
         let persist_data = container.persist_data != 0;
 
-        let docker_container_id = self.docker.run_standalone_container(
+        // If we were pulling, now update to starting after pull completes
+        let docker_container_id = match self.docker.run_standalone_container(
             &container.name,
             &container.image,
             container.port,
@@ -90,7 +118,21 @@ where
             container.env_vars.as_deref(),
             container.command.as_deref(),
             persist_data,
-        ).await?;
+        ).await {
+            Ok(docker_id) => docker_id,
+            Err(e) => {
+                // On failure, reset to stopped
+                self.container_repo.update_status(id, ContainerStatus::Stopped).await?;
+                let event = Event::standalone_container_status(
+                    id,
+                    container.name.clone(),
+                    None,
+                    "stopped".to_string(),
+                );
+                self.event_bus.emit(event).await;
+                return Err(e);
+            }
+        };
 
         self.logger.external_done(trace_id, "ContainerService", "Docker", "run_container", docker_timer.elapsed_ms());
 
@@ -203,6 +245,11 @@ where
 
         // Sync each container's status with actual Docker state
         for container in &mut containers {
+            // Skip syncing if container is in a transitional state (pulling or starting)
+            if container.status == ContainerStatus::Pulling || container.status == ContainerStatus::Starting {
+                continue;
+            }
+
             if let Some(ref docker_id) = container.container_id {
                 // Check if container is actually running in Docker
                 let is_running = self.docker.is_container_running(docker_id).await;

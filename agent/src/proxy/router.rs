@@ -76,6 +76,35 @@ async fn handle_request(
     let host_header = headers.get("host").and_then(|h| h.to_str().ok()).unwrap_or("no-host");
     ctx.logger.api_entry(&trace_id, method.as_str(), &format!("PROXY {}", path), &format!("Host: {}", host_header));
 
+    // Check if this is a subdomain request (e.g., sermo-back-app.albl.cloud)
+    // Subdomain requests should go to the target project/container, not internal API
+    let is_subdomain_request = if let Some(ref base_domain) = ctx.base_domain {
+        let hostname = host_header.split(':').next().unwrap_or(host_header);
+        let domain_suffix = format!(".{}", base_domain);
+        hostname.ends_with(&domain_suffix)
+    } else {
+        false
+    };
+
+    // Only route to internal API if NOT a subdomain request
+    if !is_subdomain_request && (path.starts_with("/api/") || path.starts_with("/webhook/") || path.starts_with("/ws") || path == "/api" || path == "/webhook") {
+        info!("[{}] Internal API endpoint detected, proxying to backend on port 3000: {}", trace_id, path);
+
+        // Forward to backend API server on port 3000
+        match proxy_to_backend(&trace_id, req, "http://127.0.0.1:3000").await {
+            Ok(response) => {
+                let status_code = response.status().as_u16();
+                ctx.logger.api_exit(&trace_id, method.as_str(), &format!("PROXY {}", path), timer.elapsed_ms(), status_code);
+                return Ok(response);
+            }
+            Err(e) => {
+                warn!("[{}] Failed to proxy to backend: {}", trace_id, e);
+                ctx.logger.api_exit(&trace_id, method.as_str(), &format!("PROXY {}", path), timer.elapsed_ms(), 502);
+                return error_response(StatusCode::BAD_GATEWAY, "Backend API unavailable");
+            }
+        }
+    }
+
     // Parse name from path (/{name}/...) for fallback
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
 
@@ -239,7 +268,12 @@ async fn handle_request(
 
     // Forward request to target
     info!("→ Forwarding to backend: {}", target_uri);
-    let client = reqwest::Client::new();
+
+    // 리다이렉트 자동 추적 비활성화 - OAuth2 등의 리다이렉트가 브라우저에서 직접 처리되도록 함
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
 
     let reqwest_method = match *req.method() {
         Method::GET => reqwest::Method::GET,
@@ -268,7 +302,7 @@ async fn handle_request(
     // Build request with headers
     let mut req_builder = client.request(reqwest_method, &target_uri);
 
-    // Copy headers except Host
+    // Copy headers except Host and content-length
     for (name, value) in headers.iter() {
         if name != "host" && name != "content-length" {
             if let Ok(value_str) = value.to_str() {
@@ -276,6 +310,13 @@ async fn handle_request(
             }
         }
     }
+
+    // Add proxy headers for OAuth and proper URL generation
+    let original_host = headers.get("host").and_then(|h| h.to_str().ok()).unwrap_or("");
+    req_builder = req_builder
+        .header("X-Forwarded-Host", original_host)
+        .header("X-Forwarded-Proto", "https")
+        .header("X-Real-IP", headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()).unwrap_or(""));
 
     info!("[{}] Forwarding to backend: {}", trace_id, target_uri);
 
@@ -333,6 +374,88 @@ async fn handle_request(
             warn!("[{}] Failed to build final response: {:?}", trace_id, e);
             // Fallback to simple response
             Ok(Response::new(Full::new(body)))
+        }
+    }
+}
+
+/// Proxy request to backend API server
+async fn proxy_to_backend(
+    trace_id: &str,
+    req: Request<Incoming>,
+    backend_url: &str,
+) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    use hyper_util::client::legacy::Client;
+    use hyper_util::rt::TokioExecutor;
+
+    let client = Client::builder(TokioExecutor::new()).build_http();
+
+    let uri = req.uri().clone();
+    let method = req.method().clone();
+    let headers = req.headers().clone();
+
+    // Collect body
+    let body_bytes = match req.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(e) => {
+            warn!("[{}] Failed to read request body: {}", trace_id, e);
+            return error_response(StatusCode::BAD_REQUEST, "Failed to read request body");
+        }
+    };
+
+    // Build new request to backend
+    let backend_uri = format!("{}{}", backend_url, uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/"));
+
+    let mut backend_req = Request::builder()
+        .method(method)
+        .uri(&backend_uri);
+
+    // Copy headers
+    for (name, value) in headers.iter() {
+        backend_req = backend_req.header(name, value);
+    }
+
+    let backend_req = match backend_req.body(Full::new(body_bytes)) {
+        Ok(req) => req,
+        Err(e) => {
+            warn!("[{}] Failed to build backend request: {}", trace_id, e);
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to build request");
+        }
+    };
+
+    // Send request to backend
+    let backend_response = match client.request(backend_req).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            warn!("[{}] Backend request failed: {}", trace_id, e);
+            return error_response(StatusCode::BAD_GATEWAY, "Backend unavailable");
+        }
+    };
+
+    let status = backend_response.status();
+    let backend_headers = backend_response.headers().clone();
+
+    // Collect backend response body
+    let backend_body = match backend_response.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(e) => {
+            warn!("[{}] Failed to read backend response: {}", trace_id, e);
+            return error_response(StatusCode::BAD_GATEWAY, "Failed to read backend response");
+        }
+    };
+
+    // Build response
+    let mut response_builder = Response::builder().status(status);
+
+    // Copy backend headers
+    for (name, value) in backend_headers.iter() {
+        response_builder = response_builder.header(name, value);
+    }
+
+    match response_builder.body(Full::new(backend_body)) {
+        Ok(response) => Ok(response),
+        Err(e) => {
+            warn!("[{}] Failed to build response: {}", trace_id, e);
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to build response")
         }
     }
 }

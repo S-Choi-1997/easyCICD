@@ -9,12 +9,40 @@
   let command = '';
   let envVars = '';
   let persistData = false;
+  let protocolType = 'tcp';  // tcp or http
   let creating = false;
   let error = '';
+  let nameError = '';
+
+  // Validate container name in real-time
+  function validateName() {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      nameError = '';
+      return;
+    }
+
+    // Allow only alphanumeric and hyphens
+    const validPattern = /^[a-zA-Z0-9-]+$/;
+    if (!validPattern.test(trimmedName)) {
+      nameError = '영문, 숫자, 하이픈(-)만 사용할 수 있습니다';
+    } else if (trimmedName.startsWith('-') || trimmedName.endsWith('-')) {
+      nameError = '하이픈(-)으로 시작하거나 끝날 수 없습니다';
+    } else {
+      nameError = '';
+    }
+  }
 
   async function createContainer() {
     if (!name.trim() || !image.trim() || !containerPort) {
       error = '이름, 이미지, 컨테이너 포트는 필수입니다';
+      return;
+    }
+
+    // Validate name format
+    validateName();
+    if (nameError) {
+      error = nameError;
       return;
     }
 
@@ -48,7 +76,8 @@
           container_port: portNum,
           command: command.trim() || null,
           env_vars: Object.keys(parsedEnvVars).length > 0 ? parsedEnvVars : null,
-          persist_data: persistData
+          persist_data: persistData,
+          protocol_type: protocolType
         })
       });
 
@@ -90,8 +119,20 @@
 
       <div class="form-group">
         <label for="name">이름 *</label>
-        <input type="text" id="name" bind:value={name} placeholder="my-redis" class="form-input" />
-        <span class="form-help">컨테이너 이름 (영문, 숫자, 하이픈만)</span>
+        <input
+          type="text"
+          id="name"
+          bind:value={name}
+          on:input={validateName}
+          placeholder="my-redis"
+          class="form-input"
+          class:error-input={nameError}
+        />
+        {#if nameError}
+          <span class="error-help">{nameError}</span>
+        {:else}
+          <span class="form-help">컨테이너 이름 (영문, 숫자, 하이픈만)</span>
+        {/if}
       </div>
 
       <div class="form-group">
@@ -104,6 +145,23 @@
         <label for="containerPort">컨테이너 포트 *</label>
         <input type="number" id="containerPort" bind:value={containerPort} placeholder="3000" class="form-input" min="1" max="65535" />
         <span class="form-help">컨테이너 내부에서 사용할 포트 (외부 포트는 자동 할당)</span>
+      </div>
+
+      <div class="form-group">
+        <label>프로토콜 타입 *</label>
+        <div class="radio-group">
+          <label class="radio-label">
+            <input type="radio" bind:group={protocolType} value="tcp" />
+            <span>TCP</span>
+            <span class="radio-desc">(Redis, MySQL, PostgreSQL 등)</span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" bind:group={protocolType} value="http" />
+            <span>HTTP</span>
+            <span class="radio-desc">(웹 서버, API 서버 등)</span>
+          </label>
+        </div>
+        <span class="form-help">TCP: 직접 IP:포트로 접속 / HTTP: 서브도메인으로 프록시</span>
       </div>
 
       <div class="form-group">
@@ -204,6 +262,22 @@
     display: block;
   }
 
+  .error-help {
+    font-size: 0.75rem;
+    color: #dc2626;
+    margin-top: 0.25rem;
+    display: block;
+  }
+
+  .error-input {
+    border-color: #dc2626 !important;
+  }
+
+  .error-input:focus {
+    border-color: #dc2626 !important;
+    box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.1) !important;
+  }
+
   .checkbox-label {
     display: flex;
     align-items: center;
@@ -271,4 +345,46 @@
     background: #4b5563;
   }
 
+  .radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .radio-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.375rem;
+    transition: all 0.15s;
+  }
+
+  .radio-label:hover {
+    background: #f9fafb;
+  }
+
+  .radio-label:has(input:checked) {
+    border-color: #3b82f6;
+    background: #eff6ff;
+  }
+
+  .radio-label input[type="radio"] {
+    width: 1rem;
+    height: 1rem;
+    cursor: pointer;
+  }
+
+  .radio-label span {
+    font-weight: 500;
+    color: #374151;
+  }
+
+  .radio-desc {
+    font-weight: 400 !important;
+    color: #6b7280 !important;
+    font-size: 0.813rem;
+  }
 </style>

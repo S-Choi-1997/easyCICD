@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -10,22 +10,30 @@ use std::path::PathBuf;
 use tokio::{fs, process::Command};
 use tracing::{info, warn};
 
-use crate::db::models::{CreateBuild, CreateProject, Slot};
-use crate::docker::client::DockerClient;
+use crate::db::models::{CreateBuild, CreateProject, Project, Slot, UpdateProject};
+use crate::github::client::GitHubClient;
 use crate::state::AppContext;
 use crate::infrastructure::logging::{TraceContext, Timer};
-use crate::application::ports::repositories::{ProjectRepository, BuildRepository};
+use crate::application::ports::repositories::{ProjectRepository, BuildRepository, SettingsRepository};
 
 pub fn projects_routes() -> Router<AppContext> {
     Router::new()
         .route("/", get(list_projects).post(create_project))
-        .route("/{id}", get(get_project).delete(delete_project))
+        .route("/{id}", get(get_project).put(update_project).delete(delete_project))
         .route("/{id}/builds", post(trigger_build))
         .route("/{id}/rollback/{build_id}", post(rollback_build))
         .route("/{id}/runtime-logs", get(runtime_logs))
         .route("/{id}/containers/start", post(start_containers))
         .route("/{id}/containers/stop", post(stop_containers))
         .route("/{id}/containers/restart", post(restart_containers))
+}
+
+/// Project response with last build status
+#[derive(Serialize)]
+struct ProjectWithStatus {
+    #[serde(flatten)]
+    project: Project,
+    last_build_status: Option<String>,
 }
 
 async fn list_projects(
@@ -39,13 +47,25 @@ async fn list_projects(
 
     match ctx.project_repo.list().await {
         Ok(projects) => {
+            // Fetch last build status for each project
+            let mut projects_with_status = Vec::new();
+            for project in projects {
+                let last_build_status = match ctx.build_repo.get_latest_by_project(project.id).await {
+                    Ok(Some(build)) => Some(build.status.to_string()),
+                    _ => None,
+                };
+                projects_with_status.push(ProjectWithStatus {
+                    project,
+                    last_build_status,
+                });
+            }
             ctx.logger.api_exit(&trace_id, "GET", "/api/projects", timer.elapsed_ms(), 200);
-            (StatusCode::OK, Json(projects))
+            (StatusCode::OK, Json(projects_with_status))
         }
         Err(e) => {
             warn!("[{}] Failed to list projects: {}", trace_id, e);
             ctx.logger.api_exit(&trace_id, "GET", "/api/projects", timer.elapsed_ms(), 500);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(vec![]))
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(Vec::<ProjectWithStatus>::new()))
         }
     }
 }
@@ -91,6 +111,8 @@ struct CreateProjectRequest {
     runtime_command: String,
     health_check_url: String,
     runtime_port: i32,
+    build_env_vars: Option<String>,
+    runtime_env_vars: Option<String>,
 }
 
 async fn create_project(
@@ -103,6 +125,7 @@ async fn create_project(
 
     ctx.logger.api_entry(&trace_id, "POST", "/api/projects", &format!("name={}", req.name));
 
+    let repo_url = req.repo.clone();
     let create_project = CreateProject {
         name: req.name,
         repo: req.repo,
@@ -116,21 +139,225 @@ async fn create_project(
         runtime_command: req.runtime_command,
         health_check_url: req.health_check_url,
         runtime_port: req.runtime_port,
+        build_env_vars: req.build_env_vars,
+        runtime_env_vars: req.runtime_env_vars,
     };
 
-    match ctx.project_repo.create(create_project).await {
-        Ok(project) => {
-            ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), 201);
-            (StatusCode::CREATED, Json(Some(project)))
-        }
+    let project = match ctx.project_repo.create(create_project).await {
+        Ok(p) => p,
         Err(e) => {
             warn!("[{}] Failed to create project: {}", trace_id, e);
             ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), 500);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(None))
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(None));
+        }
+    };
+
+    // Register GitHub webhook
+    if let Err(e) = register_github_webhook(&ctx, &trace_id, project.id, &repo_url).await {
+        warn!("[{}] Failed to register GitHub webhook: {}", trace_id, e);
+        // Continue even if webhook registration fails - project is still created
+    }
+
+    // Fetch updated project with webhook_id
+    let final_project = ctx.project_repo.get(project.id).await.ok().flatten().unwrap_or(project);
+
+    ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), 201);
+    (StatusCode::CREATED, Json(Some(final_project)))
+}
+
+/// Helper function to register GitHub webhook for a project
+async fn register_github_webhook(
+    ctx: &AppContext,
+    trace_id: &str,
+    project_id: i64,
+    repo_url: &str,
+) -> Result<(), String> {
+    // Get required settings
+    let github_token = ctx.settings_repo.get("github_token").await
+        .map_err(|e| format!("Failed to get GitHub token: {}", e))?
+        .ok_or("GitHub token not configured")?;
+
+    let webhook_url = ctx.settings_repo.get("webhook_url").await
+        .map_err(|e| format!("Failed to get webhook URL: {}", e))?
+        .ok_or("Webhook URL not configured")?;
+
+    let webhook_secret = ctx.settings_repo.get("webhook_secret").await
+        .map_err(|e| format!("Failed to get webhook secret: {}", e))?
+        .ok_or("Webhook secret not configured")?;
+
+    // Parse owner/repo from repo URL (e.g., "owner/repo" or "https://github.com/owner/repo")
+    let (owner, repo) = parse_repo_owner_name(repo_url)
+        .ok_or_else(|| format!("Invalid repo URL format: {}", repo_url))?;
+
+    info!("[{}] Registering GitHub webhook for {}/{}", trace_id, owner, repo);
+
+    // Create GitHub client and register webhook
+    let github_client = GitHubClient::new(github_token);
+    let webhook = github_client.create_webhook(&owner, &repo, &webhook_url, &webhook_secret)
+        .await
+        .map_err(|e| format!("GitHub API error: {}", e))?;
+
+    info!("[{}] GitHub webhook registered successfully: id={}", trace_id, webhook.id);
+
+    // Update project with webhook ID
+    ctx.project_repo.update_webhook_id(project_id, Some(webhook.id as i64))
+        .await
+        .map_err(|e| format!("Failed to update project with webhook ID: {}", e))?;
+
+    Ok(())
+}
+
+/// Parse owner and repo name from various repo URL formats
+fn parse_repo_owner_name(repo_url: &str) -> Option<(String, String)> {
+    // Handle formats like:
+    // - "owner/repo"
+    // - "https://github.com/owner/repo"
+    // - "https://github.com/owner/repo.git"
+    // - "git@github.com:owner/repo.git"
+
+    let cleaned = repo_url
+        .trim()
+        .trim_end_matches(".git")
+        .trim_end_matches('/');
+
+    // Try to extract from URL format
+    if cleaned.contains("github.com") {
+        // HTTPS format: https://github.com/owner/repo
+        if let Some(path) = cleaned.strip_prefix("https://github.com/") {
+            let parts: Vec<&str> = path.split('/').collect();
+            if parts.len() >= 2 {
+                return Some((parts[0].to_string(), parts[1].to_string()));
+            }
+        }
+        // SSH format: git@github.com:owner/repo
+        if let Some(path) = cleaned.strip_prefix("git@github.com:") {
+            let parts: Vec<&str> = path.split('/').collect();
+            if parts.len() >= 2 {
+                return Some((parts[0].to_string(), parts[1].to_string()));
+            }
+        }
+    }
+
+    // Simple format: owner/repo
+    let parts: Vec<&str> = cleaned.split('/').collect();
+    if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+        return Some((parts[0].to_string(), parts[1].to_string()));
+    }
+
+    None
+}
+
+/// Helper function to delete GitHub webhook for a project
+async fn delete_github_webhook(
+    ctx: &AppContext,
+    trace_id: &str,
+    repo_url: &str,
+    webhook_id: i64,
+) -> Result<(), String> {
+    // Get GitHub token
+    let github_token = ctx.settings_repo.get("github_token").await
+        .map_err(|e| format!("Failed to get GitHub token: {}", e))?
+        .ok_or("GitHub token not configured")?;
+
+    // Parse owner/repo from repo URL
+    let (owner, repo) = parse_repo_owner_name(repo_url)
+        .ok_or_else(|| format!("Invalid repo URL format: {}", repo_url))?;
+
+    info!("[{}] Deleting GitHub webhook {} for {}/{}", trace_id, webhook_id, owner, repo);
+
+    // Create GitHub client and delete webhook
+    let github_client = GitHubClient::new(github_token);
+    github_client.delete_webhook(&owner, &repo, webhook_id as u64)
+        .await
+        .map_err(|e| format!("GitHub API error: {}", e))?;
+
+    info!("[{}] GitHub webhook {} deleted successfully", trace_id, webhook_id);
+
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct UpdateProjectRequest {
+    name: Option<String>,
+    repo: Option<String>,
+    path_filter: Option<String>,
+    branch: Option<String>,
+    build_image: Option<String>,
+    build_command: Option<String>,
+    cache_type: Option<String>,
+    working_directory: Option<String>,
+    runtime_image: Option<String>,
+    runtime_command: Option<String>,
+    health_check_url: Option<String>,
+    runtime_port: Option<i32>,
+    build_env_vars: Option<String>,
+    runtime_env_vars: Option<String>,
+}
+
+async fn update_project(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(req): Json<UpdateProjectRequest>,
+) -> impl IntoResponse {
+    let trace_id = TraceContext::extract_or_generate(&headers);
+    let timer = Timer::start();
+
+    ctx.logger.api_entry(&trace_id, "PUT", &format!("/api/projects/{}", id), &format!("project_id={}", id));
+
+    // Check if project exists
+    match ctx.project_repo.get(id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            ctx.logger.api_exit(&trace_id, "PUT", &format!("/api/projects/{}", id), timer.elapsed_ms(), 404);
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Project not found"})),
+            );
+        }
+        Err(e) => {
+            warn!("[{}] Failed to get project: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "PUT", &format!("/api/projects/{}", id), timer.elapsed_ms(), 500);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Database error"})),
+            );
+        }
+    }
+
+    let update = UpdateProject {
+        name: req.name,
+        repo: req.repo,
+        path_filter: req.path_filter,
+        branch: req.branch,
+        build_image: req.build_image,
+        build_command: req.build_command,
+        cache_type: req.cache_type,
+        working_directory: req.working_directory,
+        build_env_vars: req.build_env_vars,
+        runtime_image: req.runtime_image,
+        runtime_command: req.runtime_command,
+        health_check_url: req.health_check_url,
+        runtime_port: req.runtime_port,
+        runtime_env_vars: req.runtime_env_vars,
+    };
+
+    match ctx.project_repo.update(id, update).await {
+        Ok(project) => {
+            info!("[{}] Project {} updated successfully", trace_id, id);
+            ctx.logger.api_exit(&trace_id, "PUT", &format!("/api/projects/{}", id), timer.elapsed_ms(), 200);
+            (StatusCode::OK, Json(serde_json::json!(project)))
+        }
+        Err(e) => {
+            warn!("[{}] Failed to update project: {}", trace_id, e);
+            ctx.logger.api_exit(&trace_id, "PUT", &format!("/api/projects/{}", id), timer.elapsed_ms(), 500);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Failed to update project: {}", e)})),
+            )
         }
     }
 }
-
 
 async fn trigger_build(
     State(ctx): State<AppContext>,
@@ -292,6 +519,14 @@ async fn delete_project(
         }
     };
 
+    // Delete GitHub webhook if exists
+    if let Some(webhook_id) = project.github_webhook_id {
+        if let Err(e) = delete_github_webhook(&ctx, &trace_id, &project.repo, webhook_id).await {
+            warn!("[{}] Failed to delete GitHub webhook: {}", trace_id, e);
+            // Continue with project deletion even if webhook deletion fails
+        }
+    }
+
     // Stop and remove containers using context's docker
     for slot in [Slot::Blue, Slot::Green] {
         let container_id = match slot {
@@ -335,15 +570,15 @@ async fn delete_project(
         }
     }
 
-    // Remove all build output directories for this project
-    if output_base.exists() {
-        if let Ok(mut entries) = fs::read_dir(&output_base).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                // Remove all build directories (they will be cascade deleted from DB anyway)
-                if entry.path().is_dir() {
-                    if let Err(e) = fs::remove_dir_all(entry.path()).await {
-                        warn!("[{}] Failed to remove build output {:?}: {}", trace_id, entry.path(), e);
-                    }
+    // Remove only build output directories for this specific project
+    // First, get all builds for this project to know which directories to delete
+    if let Ok(builds) = ctx.build_repo.list_by_project(id, 10000).await {
+        for build in builds {
+            let build_output_path = output_base.join(format!("build{}", build.id));
+            if build_output_path.exists() {
+                info!("[{}] Removing build output: {:?}", trace_id, build_output_path);
+                if let Err(e) = fs::remove_dir_all(&build_output_path).await {
+                    warn!("[{}] Failed to remove build output {:?}: {}", trace_id, build_output_path, e);
                 }
             }
         }

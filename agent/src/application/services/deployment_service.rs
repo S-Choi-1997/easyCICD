@@ -177,6 +177,7 @@ where
                 project.runtime_port as u16,
                 project.id,
                 &target_slot.to_string().to_lowercase(),
+                project.runtime_env_vars.as_deref(),
             )
             .await
             .context("Failed to start runtime container")?;
@@ -324,7 +325,7 @@ where
         }
     }
 
-    /// 컨테이너 헬스체크 수행
+    /// 컨테이너 헬스체크 수행 (컨테이너 실행 여부만 확인)
     async fn perform_health_check(&self, trace_id: &str, project: &Project, build: &Build, container_id: &str) -> Result<()> {
         let max_attempts = 10;
         let retry_interval = Duration::from_secs(2);
@@ -467,6 +468,7 @@ where
                 project.runtime_port as u16,
                 project.id,
                 &deploy_slot.to_string().to_lowercase(),
+                project.runtime_env_vars.as_deref(),
             )
             .await
             .context("Failed to start rollback container")?;

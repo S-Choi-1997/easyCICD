@@ -14,6 +14,7 @@ mod workers;
 use anyhow::Result;
 use axum::{routing::{get, post}, Router};
 use tower_http::services::ServeDir;
+use tower_http::trace::TraceLayer;
 use tracing::{info, error};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -109,6 +110,7 @@ async fn main() -> Result<()> {
         .nest("/api", api_routes())
         // Serve static files from /app/frontend directory
         .fallback_service(ServeDir::new("frontend"))
+        .layer(TraceLayer::new_for_http())
         .with_state(context.clone());
 
     // Start API server (port 3000)
@@ -175,6 +177,16 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Start Container Cleanup worker
+    let container_cleanup = tokio::spawn({
+        let context = context.clone();
+        async move {
+            if let Err(e) = workers::run_container_cleanup(context).await {
+                tracing::error!("Container cleanup worker error: {}", e);
+            }
+        }
+    });
+
     info!("All services started successfully");
 
     // Keep the application running
@@ -199,6 +211,9 @@ async fn main() -> Result<()> {
         }
         _ = container_log_streamer => {
             info!("Container log streamer stopped");
+        }
+        _ = container_cleanup => {
+            info!("Container cleanup worker stopped");
         }
     }
 
@@ -310,3 +325,7 @@ async fn synchronize_container_states(context: &AppContext, docker: &DockerClien
 
     Ok(())
 }
+// force rebuild Wed Jan 21 01:57:39 PM KST 2026
+// rebuild 1768971465
+// rebuild 1768971470
+// rebuild

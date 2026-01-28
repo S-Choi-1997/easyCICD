@@ -195,4 +195,25 @@ impl GitHubClient {
 
         Ok(())
     }
+
+    /// List webhooks for a repository
+    pub async fn list_webhooks(&self, owner: &str, repo: &str) -> Result<Vec<Webhook>> {
+        let url = format!("https://api.github.com/repos/{}/{}/hooks", owner, repo);
+
+        let response = self.client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("User-Agent", "EasyCI CD")
+            .header("Accept", "application/vnd.github.v3+json")
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await?;
+            return Err(anyhow!("GitHub API error ({}): {}", status, body));
+        }
+
+        Ok(response.json().await?)
+    }
 }

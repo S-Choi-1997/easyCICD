@@ -30,6 +30,7 @@ pub struct AppContext {
         BuildService<
             SqliteBuildRepository,
             SqliteProjectRepository,
+            SqliteSettingsRepository,
             BroadcastEventBus,
         >,
     >,
@@ -92,9 +93,10 @@ impl AppContext {
             logger.clone(),
         ));
 
-        let build_service = Arc::new(BuildService::<SqliteBuildRepository, SqliteProjectRepository, BroadcastEventBus>::new(
+        let build_service = Arc::new(BuildService::<SqliteBuildRepository, SqliteProjectRepository, SqliteSettingsRepository, BroadcastEventBus>::new(
             build_repo.clone(),
             project_repo.clone(),
+            settings_repo.clone(),
             event_bus.clone(),
             docker.clone(),
             logger.clone(),

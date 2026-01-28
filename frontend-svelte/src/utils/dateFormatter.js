@@ -2,16 +2,29 @@ import { formatDistanceToNow, format, parseISO, isValid } from 'date-fns';
 import { ko } from 'date-fns/locale';
 
 /**
+ * 날짜 문자열을 파싱
+ * SQLite의 datetime('now')는 UTC로 저장됨
+ */
+function parseDate(dateString) {
+    if (!dateString) return null;
+
+    // SQLite의 "YYYY-MM-DD HH:MM:SS" 형식을 ISO 형식으로 변환
+    // datetime('now')는 UTC이므로 'Z' 접미사 추가
+    const normalized = dateString.replace(' ', 'T') + 'Z';
+    const date = parseISO(normalized);
+
+    return isValid(date) ? date : null;
+}
+
+/**
  * 상대 시간 표시 (예: "3분 전", "2시간 전")
  */
 export function formatRelativeTime(dateString) {
     if (!dateString) return '알 수 없음';
 
     try {
-        // Handle both ISO format and space-separated format from SQLite
-        const normalizedDate = dateString.replace(' ', 'T');
-        const date = parseISO(normalizedDate);
-        if (!isValid(date)) return '알 수 없음';
+        const date = parseDate(dateString);
+        if (!date) return '알 수 없음';
 
         return formatDistanceToNow(date, { addSuffix: true, locale: ko });
     } catch (error) {
@@ -27,10 +40,8 @@ export function formatAbsoluteTime(dateString) {
     if (!dateString) return '알 수 없음';
 
     try {
-        // Handle both ISO format and space-separated format from SQLite
-        const normalizedDate = dateString.replace(' ', 'T');
-        const date = parseISO(normalizedDate);
-        if (!isValid(date)) return '알 수 없음';
+        const date = parseDate(dateString);
+        if (!date) return '알 수 없음';
 
         return format(date, 'yyyy-MM-dd HH:mm:ss');
     } catch (error) {
@@ -46,10 +57,8 @@ export function formatShortTime(dateString) {
     if (!dateString) return '알 수 없음';
 
     try {
-        // Handle both ISO format and space-separated format from SQLite
-        const normalizedDate = dateString.replace(' ', 'T');
-        const date = parseISO(normalizedDate);
-        if (!isValid(date)) return '알 수 없음';
+        const date = parseDate(dateString);
+        if (!date) return '알 수 없음';
 
         return format(date, 'MM/dd HH:mm');
     } catch (error) {
@@ -66,13 +75,10 @@ export function formatDuration(startString, endString) {
     if (!endString) return '진행 중';
 
     try {
-        // Handle both ISO format and space-separated format from SQLite
-        const normalizedStart = startString.replace(' ', 'T');
-        const normalizedEnd = endString.replace(' ', 'T');
-        const start = parseISO(normalizedStart);
-        const end = parseISO(normalizedEnd);
+        const start = parseDate(startString);
+        const end = parseDate(endString);
 
-        if (!isValid(start) || !isValid(end)) return '알 수 없음';
+        if (!start || !end) return '알 수 없음';
 
         const diffMs = end - start;
         const diffSec = Math.floor(diffMs / 1000);
