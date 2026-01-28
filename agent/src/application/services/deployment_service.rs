@@ -333,30 +333,51 @@ where
         project: &Project,
         build: &Build,
         container_id: &str,
-        target_port: u16,
+        _target_port: u16,
     ) -> Result<()> {
-        let max_attempts = 15;  // 증가: HTTP 서버 시작 시간 고려
-        let retry_interval = Duration::from_secs(3);
+        let max_attempts = 10;
+        let retry_interval = Duration::from_secs(2);
 
         info!("[{}] Starting health check for container: {}", trace_id, container_id);
 
-        // HTTP client with timeout
-        let http_client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .context("Failed to create HTTP client")?;
+        // health_check_url이 비어있거나 "/" 또는 "disabled"면 HTTP 체크 스킵
+        // 컨테이너 실행 여부만 확인
+        let skip_http_check = project.health_check_url.is_empty()
+            || project.health_check_url == "/"
+            || project.health_check_url.to_lowercase() == "disabled"
+            || project.health_check_url.to_lowercase() == "none";
 
-        // Construct health check URL
-        let health_path = if project.health_check_url.is_empty() || project.health_check_url == "/" {
-            "/".to_string()
-        } else if project.health_check_url.starts_with('/') {
-            project.health_check_url.clone()
+        if skip_http_check {
+            info!("[{}] HTTP health check disabled, checking container running status only", trace_id);
+        }
+
+        // 컨테이너 이름으로 헬스체크 URL 구성 (Docker 내부 네트워크에서 접근 가능)
+        let container_name = format!("project-{}-{}", project.id,
+            if project.active_slot == crate::db::models::Slot::Blue { "green" } else { "blue" });
+        let runtime_port = project.runtime_port as u16;
+
+        let health_url = if skip_http_check {
+            "container-only".to_string()
         } else {
-            format!("/{}", project.health_check_url)
+            let health_path = if project.health_check_url.starts_with('/') {
+                project.health_check_url.clone()
+            } else {
+                format!("/{}", project.health_check_url)
+            };
+            format!("http://{}:{}{}", container_name, runtime_port, health_path)
         };
-        let health_url = format!("http://{}:{}{}", self.docker.gateway_ip(), target_port, health_path);
 
         info!("[{}] Health check URL: {}", trace_id, health_url);
+
+        // HTTP client (skip_http_check이 false일 때만 사용)
+        let http_client = if !skip_http_check {
+            Some(Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .context("Failed to create HTTP client")?)
+        } else {
+            None
+        };
 
         for attempt in 1..=max_attempts {
             self.logger.event_emit(trace_id, "DeploymentService", &format!("HealthCheck::Attempt{}/{}", attempt, max_attempts));
@@ -399,43 +420,67 @@ where
                 anyhow::bail!("Container stopped unexpectedly during health check");
             }
 
-            // Step 2: HTTP health check
-            self.logger.external_call(trace_id, "DeploymentService", "HTTP", "health_check");
+            // HTTP 체크 스킵 시 컨테이너가 실행 중이면 바로 성공
+            if skip_http_check {
+                info!(
+                    "[{}] Health check passed (container running) on attempt {}/{}",
+                    trace_id, attempt, max_attempts
+                );
 
-            match http_client.get(&health_url).send().await {
-                Ok(response) => {
-                    let status = response.status();
+                self.logger.event_emit(trace_id, "DeploymentService", "HealthCheck::Success");
+                self.event_bus.emit(Event::HealthCheck {
+                    project_id: project.id,
+                    build_id: build.id,
+                    attempt,
+                    max_attempts,
+                    status: "Success".to_string(),
+                    url: health_url.clone(),
+                    timestamp: Event::now(),
+                }).await;
 
-                    if status.is_success() || status.as_u16() == 304 {
-                        info!(
-                            "[{}] Health check passed on attempt {}/{} - HTTP {} from {}",
-                            trace_id, attempt, max_attempts, status, health_url
-                        );
+                return Ok(());
+            }
 
-                        self.logger.event_emit(trace_id, "DeploymentService", "HealthCheck::Success");
-                        self.event_bus.emit(Event::HealthCheck {
-                            project_id: project.id,
-                            build_id: build.id,
-                            attempt,
-                            max_attempts,
-                            status: "Success".to_string(),
-                            url: health_url.clone(),
-                            timestamp: Event::now(),
-                        }).await;
+            // Step 2: HTTP health check (only if not skipped)
+            if let Some(ref client) = http_client {
+                self.logger.external_call(trace_id, "DeploymentService", "HTTP", "health_check");
 
-                        return Ok(());
-                    } else {
+                match client.get(&health_url).send().await {
+                    Ok(response) => {
+                        let status = response.status();
+
+                        // 2xx, 3xx 응답은 모두 성공으로 처리
+                        if status.is_success() || status.is_redirection() {
+                            info!(
+                                "[{}] Health check passed on attempt {}/{} - HTTP {} from {}",
+                                trace_id, attempt, max_attempts, status, health_url
+                            );
+
+                            self.logger.event_emit(trace_id, "DeploymentService", "HealthCheck::Success");
+                            self.event_bus.emit(Event::HealthCheck {
+                                project_id: project.id,
+                                build_id: build.id,
+                                attempt,
+                                max_attempts,
+                                status: "Success".to_string(),
+                                url: health_url.clone(),
+                                timestamp: Event::now(),
+                            }).await;
+
+                            return Ok(());
+                        } else {
+                            warn!(
+                                "[{}] Health check attempt {}/{} - HTTP {} (not 2xx/3xx)",
+                                trace_id, attempt, max_attempts, status
+                            );
+                        }
+                    }
+                    Err(e) => {
                         warn!(
-                            "[{}] Health check attempt {}/{} - HTTP {} (not 2xx)",
-                            trace_id, attempt, max_attempts, status
+                            "[{}] Health check attempt {}/{} - Connection error: {}",
+                            trace_id, attempt, max_attempts, e
                         );
                     }
-                }
-                Err(e) => {
-                    warn!(
-                        "[{}] Health check attempt {}/{} - Connection error: {}",
-                        trace_id, attempt, max_attempts, e
-                    );
                 }
             }
 
