@@ -7,6 +7,7 @@
   import ProjectDetail from './routes/ProjectDetail.svelte';
   import Settings from './routes/Settings.svelte';
   import ContainerNew from './routes/ContainerNew.svelte';
+  import ProjectLogs from './routes/ProjectLogs.svelte';
   import Login from './routes/Login.svelte';
   import { initWebSocket, subscribe } from './stores/websocket';
   import { updateProjectFromWebSocket } from './stores/projects';
@@ -20,6 +21,7 @@
     '/setup': Setup,
     '/build/:id': BuildHistory,
     '/project/:id': ProjectDetail,
+    '/project/:id/logs': ProjectLogs,
     '/settings': Settings,
     '/containers/new': ContainerNew,
   };
@@ -31,6 +33,9 @@
     }
   }
 
+  let wsInitialized = false;
+  let currentUnsubscribe = null;
+
   onMount(async () => {
     // Version output (debugging)
     console.log('EasyCI/CD Frontend v2.1.0 - OAuth2 Auth');
@@ -39,29 +44,35 @@
     // Initialize auth first
     await initAuth();
 
-    // Only initialize WebSocket if authenticated
-    if ($isAuthenticated) {
-      initWebSocket();
-
-      const unsubscribe = subscribe('app-global', (data) => {
-        updateProjectFromWebSocket(data);
-        updateBuildFromWebSocket(data);
-      });
-
-      return unsubscribe;
-    }
+    // Cleanup on unmount
+    return () => {
+      if (currentUnsubscribe) {
+        currentUnsubscribe();
+        currentUnsubscribe = null;
+      }
+    };
   });
 
-  // Re-initialize WebSocket when auth status changes
-  $: if ($isAuthenticated && typeof window !== 'undefined') {
-    // Small delay to ensure auth is fully settled
-    setTimeout(() => {
-      initWebSocket();
-      subscribe('app-global', (data) => {
-        updateProjectFromWebSocket(data);
-        updateBuildFromWebSocket(data);
-      });
-    }, 100);
+  // Initialize WebSocket only once when authenticated
+  $: if ($isAuthenticated && !wsInitialized && typeof window !== 'undefined') {
+    wsInitialized = true;
+
+    initWebSocket();
+
+    // Store unsubscribe function
+    currentUnsubscribe = subscribe('app-global', (data) => {
+      updateProjectFromWebSocket(data);
+      updateBuildFromWebSocket(data);
+    });
+  }
+
+  // Reset flag when logged out
+  $: if (!$isAuthenticated) {
+    wsInitialized = false;
+    if (currentUnsubscribe) {
+      currentUnsubscribe();
+      currentUnsubscribe = null;
+    }
   }
 </script>
 

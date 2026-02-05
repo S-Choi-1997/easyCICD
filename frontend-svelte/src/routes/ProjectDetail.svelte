@@ -32,6 +32,8 @@
   let editingProject = null;
   let saving = false;
   let saveError = '';
+  let pats = [];
+  let discordWebhooks = [];
 
   onMount(async () => {
     await loadProject();
@@ -222,8 +224,30 @@
     return colors[status] || 'bg-gray-100 text-gray-800';
   }
 
+  async function loadPats() {
+    try {
+      const response = await fetch(`${API_BASE}/github/pats`);
+      const data = await response.json();
+      pats = data.pats || [];
+    } catch (error) {
+      console.error('PAT 목록 로드 실패:', error);
+    }
+  }
+
+  async function loadDiscordWebhooks() {
+    try {
+      const response = await fetch(`${API_BASE}/discord-webhooks`);
+      const data = await response.json();
+      discordWebhooks = (data.webhooks || []).filter(w => w.enabled);
+    } catch (error) {
+      console.error('Discord 웹훅 로드 실패:', error);
+    }
+  }
+
   // --- Project Edit Functions ---
-  function startEdit() {
+  async function startEdit() {
+    await loadPats();
+    await loadDiscordWebhooks();
     editingProject = { ...project };
 
     // Convert JSON env vars to text format
@@ -301,6 +325,8 @@
         runtime_env_vars: Object.keys(parseEnvVars(editingProject.runtime_env_vars_text)).length > 0
           ? JSON.stringify(parseEnvVars(editingProject.runtime_env_vars_text))
           : null,
+        github_pat_id: editingProject.github_pat_id || null,
+        discord_webhook_id: editingProject.discord_webhook_id || null,
       };
 
       const response = await fetch(`${API_BASE}/projects/${projectId}`, {
@@ -529,6 +555,12 @@
           >
             지우기
           </button>
+          <button
+            on:click={() => window.open(`/#/project/${projectId}/logs`, '_blank')}
+            class="btn btn-secondary btn-sm"
+          >
+            전체보기
+          </button>
         </div>
       </div>
 
@@ -645,6 +677,41 @@
               placeholder="KEY=VALUE (줄바꿈으로 구분)"
             ></textarea>
             <span class="form-help">기본 환경변수: PORT=(런타임포트)</span>
+          </div>
+
+          <!-- GitHub PAT 선택 -->
+          {#if pats.length > 0}
+          <div class="form-group">
+            <label for="edit-pat">GitHub PAT</label>
+            <select id="edit-pat" bind:value={editingProject.github_pat_id} class="form-input">
+              <option value={null}>선택 안함 (기본 PAT 사용)</option>
+              {#each pats as pat}
+                <option value={pat.id}>
+                  {pat.label} ({pat.github_username || pat.token_preview})
+                </option>
+              {/each}
+            </select>
+            <span class="form-help">이 프로젝트에서 사용할 GitHub PAT</span>
+          </div>
+          {/if}
+
+          <!-- Discord Webhook 선택 -->
+          <div class="form-group">
+            <label for="edit-discord-webhook">Discord 알림</label>
+            <select id="edit-discord-webhook" bind:value={editingProject.discord_webhook_id} class="form-input">
+              <option value={null}>알림 사용 안 함</option>
+              {#each discordWebhooks as webhook}
+                <option value={webhook.id}>
+                  {webhook.label}
+                </option>
+              {/each}
+            </select>
+            <span class="form-help">
+              빌드 및 배포 상태를 Discord로 알림받습니다.
+              {#if discordWebhooks.length === 0}
+                <a href="#/settings" use:link>설정</a>에서 먼저 등록하세요.
+              {/if}
+            </span>
           </div>
 
           <!-- 저장 버튼 -->

@@ -63,7 +63,7 @@ pub async fn run_container_log_streamer(context: AppContext) -> Result<()> {
                 tokio::spawn(async move {
                     info!("[Container:{}] Starting log stream for docker:{}", container_name, docker_id);
 
-                    match ctx.docker.stream_container_logs(&docker_id).await {
+                    match ctx.docker.stream_container_logs(&docker_id, None).await {
                         Ok(mut log_stream) => {
                             while let Some(log_result) = log_stream.next().await {
                                 match log_result {

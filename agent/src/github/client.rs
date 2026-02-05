@@ -36,29 +36,58 @@ impl GitHubClient {
         Ok(response.json().await?)
     }
 
-    /// List user repositories
+    /// List user repositories (with pagination to fetch all repos)
     pub async fn list_repositories(&self) -> Result<Vec<Repository>> {
-        let url = "https://api.github.com/user/repos";
-        let response = self.client
-            .get(url)
-            .query(&[
-                ("affiliation", "owner,collaborator"),
-                ("sort", "updated"),
-                ("per_page", "100"),
-            ])
-            .header("Authorization", format!("Bearer {}", self.token))
-            .header("User-Agent", "EasyCI CD")
-            .header("Accept", "application/vnd.github.v3+json")
-            .send()
-            .await?;
+        let mut all_repos = Vec::new();
+        let mut page = 1;
+        let per_page = 100;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await?;
-            return Err(anyhow!("GitHub API error ({}): {}", status, body));
+        loop {
+            let url = "https://api.github.com/user/repos";
+            let response = self.client
+                .get(url)
+                .query(&[
+                    ("affiliation", "owner,collaborator,organization_member"),
+                    ("visibility", "all"),  // public, private, internal 모두 포함
+                    ("sort", "updated"),
+                    ("per_page", &per_page.to_string()),
+                    ("page", &page.to_string()),
+                ])
+                .header("Authorization", format!("Bearer {}", self.token))
+                .header("User-Agent", "EasyCI CD")
+                .header("Accept", "application/vnd.github.v3+json")
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await?;
+                return Err(anyhow!("GitHub API error ({}): {}", status, body));
+            }
+
+            let repos: Vec<Repository> = response.json().await?;
+            let repos_count = repos.len();
+
+            tracing::info!("Fetched page {} with {} repositories (total so far: {})", page, repos_count, all_repos.len() + repos_count);
+
+            all_repos.extend(repos);
+
+            // If we got less than per_page, we've reached the last page
+            if repos_count < per_page {
+                tracing::info!("Reached last page (got {} < {} per_page). Total repositories: {}", repos_count, per_page, all_repos.len());
+                break;
+            }
+
+            page += 1;
+
+            // Safety limit: stop after 10 pages (1000 repos)
+            if page > 10 {
+                tracing::warn!("Reached safety limit of 10 pages. Total repositories: {}", all_repos.len());
+                break;
+            }
         }
 
-        Ok(response.json().await?)
+        Ok(all_repos)
     }
 
     /// List repository branches

@@ -4,6 +4,7 @@ use crate::db::models::{
     Project, Build, CreateProject, UpdateProject, CreateBuild, Slot, BuildStatus,
     Container, CreateContainer, ContainerStatus,
     User, CreateUser, Session, CreateSession,
+    GitHubPat, CreateGitHubPat,
 };
 
 /// Repository trait for Project operations
@@ -38,6 +39,9 @@ pub trait ProjectRepository: Send + Sync {
 
     /// Update the GitHub webhook ID for a project
     async fn update_webhook_id(&self, id: i64, webhook_id: Option<i64>) -> Result<()>;
+
+    /// Update the Discord webhook ID for a project
+    async fn update_discord_webhook_id(&self, id: i64, webhook_id: Option<i64>) -> Result<()>;
 }
 
 /// Repository trait for Build operations
@@ -158,4 +162,30 @@ pub trait SessionRepository: Send + Sync {
 
     /// Delete all sessions for a user
     async fn delete_by_user(&self, user_id: i64) -> Result<()>;
+}
+
+// ============================================================================
+// GitHub PAT Repository
+// ============================================================================
+
+/// Repository trait for GitHub PAT operations
+#[async_trait]
+pub trait GitHubPatRepository: Send + Sync {
+    /// Create a new GitHub PAT
+    async fn create(&self, pat: CreateGitHubPat) -> Result<GitHubPat>;
+
+    /// Get a PAT by ID
+    async fn get(&self, id: i64) -> Result<Option<GitHubPat>>;
+
+    /// List all PATs
+    async fn list(&self) -> Result<Vec<GitHubPat>>;
+
+    /// Update a PAT
+    async fn update(&self, id: i64, label: Option<&str>, token: Option<&str>, github_username: Option<&str>) -> Result<GitHubPat>;
+
+    /// Delete a PAT
+    async fn delete(&self, id: i64) -> Result<()>;
+
+    /// Get the PAT token string for a given project (resolves project -> github_pat_id -> token)
+    async fn get_token_for_project(&self, project_id: i64) -> Result<Option<String>>;
 }

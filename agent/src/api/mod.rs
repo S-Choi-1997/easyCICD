@@ -6,6 +6,7 @@ mod ws;
 mod settings;
 mod github_api;
 mod auth;
+mod discord_webhooks;
 pub mod terminal;
 pub mod middleware;
 
@@ -17,7 +18,7 @@ pub use ws::ws_handler;
 pub use middleware::TraceIdLayer;
 pub use auth::auth_routes;
 
-use axum::{routing::{get, post, delete}, Router};
+use axum::{routing::{get, post, put, delete}, Router};
 use crate::state::AppContext;
 
 /// Admin routes - no auth required (for initial setup like whitelist)
@@ -33,6 +34,8 @@ pub fn api_routes() -> Router<AppContext> {
         .nest("/projects", projects_routes())
         .nest("/builds", builds_routes())
         .nest("/containers", containers_routes())
+        .nest("/discord-webhooks", discord_webhooks::discord_webhooks_routes())
+        .route("/projects/{id}/discord-webhook", post(discord_webhooks::set_project_discord_webhook))
         .route("/settings/webhook-secret", get(settings::get_webhook_secret))
         .route("/settings/domain", post(settings::set_domain))
         .route("/settings/domain", get(settings::get_domain))
@@ -44,6 +47,8 @@ pub fn api_routes() -> Router<AppContext> {
         .route("/settings/github-pat", post(github_api::set_github_pat))
         .route("/settings/github-pat", delete(github_api::delete_github_pat))
         .route("/settings/github-pat-status", get(github_api::get_github_pat_status))
+        .route("/github/pats", get(github_api::list_pats).post(github_api::create_pat))
+        .route("/github/pats/{id}", get(github_api::get_pat).put(github_api::update_pat).delete(github_api::delete_pat))
         .route("/github/repositories", get(github_api::list_repositories))
         .route("/github/branches", get(github_api::list_branches))
         .route("/github/folders", get(github_api::list_folders))

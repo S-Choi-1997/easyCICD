@@ -54,8 +54,23 @@ export function initWebSocket() {
         wsConnected.set(false);
         wsInstance.set(null);
 
-        // 3초 후 재연결
-        setTimeout(initWebSocket, 3000);
+        // Store current subscriptions before reconnecting
+        let currentSubscriptions;
+        subscriptions.update(subs => {
+            currentSubscriptions = new Map(subs);
+            return subs;
+        });
+
+        // Reconnect after 3 seconds
+        setTimeout(() => {
+            const newWs = initWebSocket();
+
+            // Re-establish subscriptions after connection is established
+            newWs.addEventListener('open', () => {
+                console.log('[WebSocket] Reconnected, restoring subscriptions');
+                subscriptions.set(currentSubscriptions);
+            }, { once: true });
+        }, 3000);
     };
 
     return ws;

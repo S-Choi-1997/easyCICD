@@ -9,7 +9,7 @@ use crate::application::services::{BuildService, ContainerService, DeploymentSer
 use crate::docker::DockerClient;
 use crate::infrastructure::database::{
     SqliteBuildRepository, SqliteContainerRepository, SqliteProjectRepository, SqliteSettingsRepository,
-    SqliteUserRepository, SqliteSessionRepository,
+    SqliteUserRepository, SqliteSessionRepository, SqliteGitHubPatRepository, SqliteDiscordWebhookRepository,
 };
 use crate::infrastructure::logging::BoundaryLogger;
 use crate::state::{BuildQueue, WsConnections};
@@ -35,6 +35,7 @@ pub struct AppContext {
             SqliteBuildRepository,
             SqliteProjectRepository,
             SqliteSettingsRepository,
+            SqliteGitHubPatRepository,
             BroadcastEventBus,
         >,
     >,
@@ -59,6 +60,8 @@ pub struct AppContext {
     pub container_repo: Arc<SqliteContainerRepository>,
     pub user_repo: Arc<SqliteUserRepository>,
     pub session_repo: Arc<SqliteSessionRepository>,
+    pub github_pat_repo: Arc<SqliteGitHubPatRepository>,
+    pub discord_webhook_repo: Arc<SqliteDiscordWebhookRepository>,
 
     // Infrastructure
     pub event_bus: BroadcastEventBus,
@@ -90,6 +93,8 @@ impl AppContext {
         let container_repo = Arc::new(SqliteContainerRepository::new(pool.clone()));
         let user_repo = Arc::new(SqliteUserRepository::new(pool.clone()));
         let session_repo = Arc::new(SqliteSessionRepository::new(pool.clone()));
+        let github_pat_repo = Arc::new(SqliteGitHubPatRepository::new(pool.clone()));
+        let discord_webhook_repo = Arc::new(SqliteDiscordWebhookRepository::new(pool.clone()));
 
         // Load OAuth config (optional - don't fail if not configured)
         let oauth_config = OAuthConfig::from_env().ok();
@@ -107,10 +112,11 @@ impl AppContext {
             logger.clone(),
         ));
 
-        let build_service = Arc::new(BuildService::<SqliteBuildRepository, SqliteProjectRepository, SqliteSettingsRepository, BroadcastEventBus>::new(
+        let build_service = Arc::new(BuildService::<SqliteBuildRepository, SqliteProjectRepository, SqliteSettingsRepository, SqliteGitHubPatRepository, BroadcastEventBus>::new(
             build_repo.clone(),
             project_repo.clone(),
             settings_repo.clone(),
+            github_pat_repo.clone(),
             event_bus.clone(),
             docker.clone(),
             logger.clone(),
@@ -142,6 +148,8 @@ impl AppContext {
             container_repo,
             user_repo,
             session_repo,
+            github_pat_repo,
+            discord_webhook_repo,
             event_bus,
             build_queue: Arc::new(BuildQueue::new()),
             ws_connections: Arc::new(WsConnections::new()),

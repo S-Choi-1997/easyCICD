@@ -42,8 +42,8 @@ impl ProjectRepository for SqliteProjectRepository {
                 name, repo, path_filter, branch,
                 build_image, build_command, cache_type, working_directory, build_env_vars,
                 runtime_image, runtime_command, health_check_url, runtime_port, runtime_env_vars,
-                blue_port, green_port, active_slot
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Blue')
+                blue_port, green_port, active_slot, github_pat_id, discord_webhook_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Blue', ?, ?)
             "#
         )
         .bind(&project.name)
@@ -62,6 +62,8 @@ impl ProjectRepository for SqliteProjectRepository {
         .bind(&project.runtime_env_vars)
         .bind(blue_port)
         .bind(green_port)
+        .bind(&project.github_pat_id)
+        .bind(&project.discord_webhook_id)
         .execute(&self.pool)
         .await?;
 
@@ -117,6 +119,14 @@ impl ProjectRepository for SqliteProjectRepository {
         let health_check_url = update.health_check_url.unwrap_or(current.health_check_url);
         let runtime_port = update.runtime_port.unwrap_or(current.runtime_port);
         let runtime_env_vars = update.runtime_env_vars.or(current.runtime_env_vars);
+        let github_pat_id = match update.github_pat_id {
+            Some(new_val) => new_val,       // Explicitly provided (Some(id) or None to clear)
+            None => current.github_pat_id,  // Not provided, keep current
+        };
+        let discord_webhook_id = match update.discord_webhook_id {
+            Some(new_val) => new_val,       // Explicitly provided (Some(id) or None to clear)
+            None => current.discord_webhook_id,  // Not provided, keep current
+        };
 
         sqlx::query(
             r#"
@@ -135,6 +145,8 @@ impl ProjectRepository for SqliteProjectRepository {
                 health_check_url = ?,
                 runtime_port = ?,
                 runtime_env_vars = ?,
+                github_pat_id = ?,
+                discord_webhook_id = ?,
                 updated_at = datetime('now')
             WHERE id = ?
             "#
@@ -153,6 +165,8 @@ impl ProjectRepository for SqliteProjectRepository {
         .bind(&health_check_url)
         .bind(runtime_port)
         .bind(&runtime_env_vars)
+        .bind(&github_pat_id)
+        .bind(&discord_webhook_id)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -198,6 +212,15 @@ impl ProjectRepository for SqliteProjectRepository {
 
     async fn update_webhook_id(&self, id: i64, webhook_id: Option<i64>) -> Result<()> {
         sqlx::query("UPDATE projects SET github_webhook_id = ? WHERE id = ?")
+            .bind(webhook_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn update_discord_webhook_id(&self, id: i64, webhook_id: Option<i64>) -> Result<()> {
+        sqlx::query("UPDATE projects SET discord_webhook_id = ? WHERE id = ?")
             .bind(webhook_id)
             .bind(id)
             .execute(&self.pool)
@@ -706,5 +729,114 @@ impl SessionRepository for SqliteSessionRepository {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+}
+
+// ============================================================================
+// GitHub PAT Repository
+// ============================================================================
+
+/// SQLite implementation of GitHubPatRepository
+#[derive(Clone)]
+pub struct SqliteGitHubPatRepository {
+    pool: SqlitePool,
+}
+
+impl SqliteGitHubPatRepository {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl GitHubPatRepository for SqliteGitHubPatRepository {
+    async fn create(&self, pat: CreateGitHubPat) -> Result<GitHubPat> {
+        let result = sqlx::query(
+            r#"
+            INSERT INTO github_pats (label, token, github_username)
+            VALUES (?, ?, ?)
+            "#
+        )
+        .bind(&pat.label)
+        .bind(&pat.token)
+        .bind(&pat.github_username)
+        .execute(&self.pool)
+        .await?;
+
+        let id = result.last_insert_rowid();
+        let created = sqlx::query_as::<_, GitHubPat>("SELECT * FROM github_pats WHERE id = ?")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await?;
+
+        Ok(created)
+    }
+
+    async fn get(&self, id: i64) -> Result<Option<GitHubPat>> {
+        let pat = sqlx::query_as::<_, GitHubPat>("SELECT * FROM github_pats WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(pat)
+    }
+
+    async fn list(&self) -> Result<Vec<GitHubPat>> {
+        let pats = sqlx::query_as::<_, GitHubPat>(
+            "SELECT * FROM github_pats ORDER BY created_at DESC"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(pats)
+    }
+
+    async fn update(&self, id: i64, label: Option<&str>, token: Option<&str>, github_username: Option<&str>) -> Result<GitHubPat> {
+        let current = self.get(id).await?
+            .ok_or_else(|| anyhow::anyhow!("GitHub PAT not found"))?;
+
+        let label = label.unwrap_or(&current.label);
+        let token = token.unwrap_or(&current.token);
+        let github_username = github_username.or(current.github_username.as_deref());
+
+        sqlx::query(
+            r#"
+            UPDATE github_pats SET
+                label = ?,
+                token = ?,
+                github_username = ?,
+                updated_at = datetime('now')
+            WHERE id = ?
+            "#
+        )
+        .bind(label)
+        .bind(token)
+        .bind(github_username)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        self.get(id).await?.ok_or_else(|| anyhow::anyhow!("GitHub PAT not found after update"))
+    }
+
+    async fn delete(&self, id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM github_pats WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn get_token_for_project(&self, project_id: i64) -> Result<Option<String>> {
+        let result: Option<(String,)> = sqlx::query_as(
+            r#"
+            SELECT gp.token FROM github_pats gp
+            JOIN projects p ON p.github_pat_id = gp.id
+            WHERE p.id = ?
+            "#
+        )
+        .bind(project_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(result.map(|(token,)| token))
     }
 }

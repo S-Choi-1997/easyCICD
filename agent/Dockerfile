@@ -18,9 +18,12 @@ RUN mkdir -p src && \
     cargo build --release && \
     rm -rf src
 
+# Copy migrations first and create checksum to invalidate cache when migrations change
+COPY migrations ./migrations
+RUN find migrations -type f -exec sha256sum {} \; | sort > /tmp/migrations.sum
+
 # Copy actual source code
 COPY src ./src
-COPY migrations ./migrations
 
 # Build the actual binary
 RUN touch src/main.rs && cargo build --release

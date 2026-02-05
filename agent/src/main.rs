@@ -29,6 +29,7 @@ use proxy::run_reverse_proxy;
 use ws_broadcaster::run_ws_broadcaster;
 use docker::DockerClient;
 use application::ports::repositories::ProjectRepository;
+use infrastructure::notifications::discord_notifier;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -219,6 +220,39 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Start Container Health Monitor worker
+    let container_health_monitor = tokio::spawn({
+        let context = context.clone();
+        async move {
+            if let Err(e) = workers::run_container_health_monitor(context).await {
+                tracing::error!("Container health monitor error: {}", e);
+            }
+        }
+    });
+
+    // Start Discord Notifier worker
+    let discord_notifier = tokio::spawn({
+        let webhook_repo = context.discord_webhook_repo.clone();
+        let build_repo = context.build_repo.clone();
+        let project_repo = context.project_repo.clone();
+        let event_rx = context.subscribe_events();
+        let base_url = std::env::var("BASE_URL").ok();
+
+        async move {
+            if let Err(e) = discord_notifier::run_discord_notifier(
+                webhook_repo,
+                build_repo,
+                project_repo,
+                event_rx,
+                base_url,
+            )
+            .await
+            {
+                tracing::error!("Discord notifier error: {}", e);
+            }
+        }
+    });
+
     info!("All services started successfully");
 
     // Keep the application running
@@ -249,6 +283,12 @@ async fn main() -> Result<()> {
         }
         _ = session_cleanup => {
             info!("Session cleanup worker stopped");
+        }
+        _ = container_health_monitor => {
+            info!("Container health monitor stopped");
+        }
+        _ = discord_notifier => {
+            info!("Discord notifier stopped");
         }
     }
 

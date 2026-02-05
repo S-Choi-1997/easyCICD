@@ -1,9 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
-use std::time::Duration;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use tokio::time::sleep;
 use tracing::{info, warn};
 
 use crate::db::models::{Build, BuildStatus, Project, Slot};
@@ -153,213 +151,77 @@ impl Deployer {
             }
         }
 
-        // Perform health check
-        let health_check_result = self
-            .perform_health_check(project, build, &container_id)
-            .await;
+        // 빌드 성공 시 바로 배포 성공 처리 (헬스체크 없이)
+        info!("Build succeeded, switching to {} slot", target_slot);
+        write_log!(format!("Build succeeded, switching to {} slot", target_slot));
 
-        match health_check_result {
-            Ok(_) => {
-                info!("Health check passed, switching to {} slot", target_slot);
-                write_log!(format!("Health check passed, switching to {} slot", target_slot));
+        let deployed_slot_str = target_slot.to_string();
 
-                let deployed_slot_str = target_slot.to_string();
+        // Switch active slot
+        self.state
+            .db
+            .update_project_active_slot(project.id, target_slot)
+            .await?;
 
-                // Switch active slot
-                self.state
-                    .db
-                    .update_project_active_slot(project.id, target_slot)
-                    .await?;
+        // Update build status to Success
+        self.state
+            .db
+            .finish_build(build.id, BuildStatus::Success)
+            .await?;
 
-                // Update build status to Success
-                self.state
-                    .db
-                    .finish_build(build.id, BuildStatus::Success)
-                    .await?;
+        self.state
+            .db
+            .update_build_deployed_slot(build.id, Some(deployed_slot_str.clone()))
+            .await?;
 
-                self.state
-                    .db
-                    .update_build_deployed_slot(build.id, Some(deployed_slot_str.clone()))
-                    .await?;
-
-                self.state.emit_event(Event::Deployment {
-                    project_id: project.id,
-                    project_name: project.name.clone(),
-                    build_id: build.id,
-                    status: "Success".to_string(),
-                    slot: target_slot,
-                    url: format!("https://app.yourdomain.com/{}/", project.name),
-                    timestamp: Event::now(),
-                });
-
-                self.state.emit_event(Event::BuildStatus {
-                    build_id: build.id,
-                    project_id: project.id,
-                    status: BuildStatus::Success,
-                    timestamp: Event::now(),
-                });
-
-                // Stop old container (the previous active slot, opposite of target_slot)
-                let old_slot = project.active_slot;  // This is the OLD slot before switching
-                let old_container_id = match old_slot {
-                    Slot::Blue => project.blue_container_id.clone(),
-                    Slot::Green => project.green_container_id.clone(),
-                };
-
-                if let Some(old_id) = old_container_id {
-                    info!("Stopping old {} container: {}", old_slot, old_id);
-                    write_log!(format!("Stopping old {} container: {}", old_slot, old_id));
-                    self.docker.stop_container(&old_id).await.ok();
-                    self.docker.remove_container(&old_id).await.ok();
-
-                    // Clear old container ID from database
-                    match old_slot {
-                        Slot::Blue => {
-                            self.state
-                                .db
-                                .update_project_blue_container(project.id, None)
-                                .await?;
-                        }
-                        Slot::Green => {
-                            self.state
-                                .db
-                                .update_project_green_container(project.id, None)
-                                .await?;
-                        }
-                    }
-                }
-
-                write_log!("Deployment completed successfully");
-                Ok(())
-            }
-            Err(e) => {
-                warn!("Health check failed: {}", e);
-                write_log!(format!("Health check failed: {}", e));
-
-                // Rollback: stop and remove failed container
-                write_log!("Rolling back: stopping failed container");
-                if let Err(stop_err) = self.docker.stop_container(&container_id).await {
-                    warn!("Failed to stop container during rollback: {}", stop_err);
-                }
-                if let Err(rm_err) = self.docker.remove_container(&container_id).await {
-                    warn!("Failed to remove container during rollback: {}", rm_err);
-                }
-
-                // Clear container ID from database
-                match target_slot {
-                    Slot::Blue => {
-                        if let Err(db_err) = self.state
-                            .db
-                            .update_project_blue_container(project.id, None)
-                            .await {
-                            warn!("Failed to clear blue container ID: {}", db_err);
-                        }
-                    }
-                    Slot::Green => {
-                        if let Err(db_err) = self.state
-                            .db
-                            .update_project_green_container(project.id, None)
-                            .await {
-                            warn!("Failed to clear green container ID: {}", db_err);
-                        }
-                    }
-                }
-
-                // Update build status to Failed
-                if let Err(db_err) = self.state
-                    .db
-                    .finish_build(build.id, BuildStatus::Failed)
-                    .await {
-                    warn!("Failed to update build status: {}", db_err);
-                }
-
-                self.state.emit_event(Event::Deployment {
-                    project_id: project.id,
-                    project_name: project.name.clone(),
-                    build_id: build.id,
-                    status: "Failed".to_string(),
-                    slot: target_slot,
-                    url: format!("https://app.yourdomain.com/{}/", project.name),
-                    timestamp: Event::now(),
-                });
-
-                self.state.emit_event(Event::BuildStatus {
-                    build_id: build.id,
-                    project_id: project.id,
-                    status: BuildStatus::Failed,
-                    timestamp: Event::now(),
-                });
-
-                self.state.emit_event(Event::Error {
-                    project_id: Some(project.id),
-                    build_id: Some(build.id),
-                    message: format!("Health check failed: {}", e),
-                    timestamp: Event::now(),
-                });
-
-                write_log!(format!("Deployment failed: {}", e));
-                anyhow::bail!("Deployment failed: {}", e);
-            }
-        }
-    }
-
-    async fn perform_health_check(&self, project: &Project, build: &Build, container_id: &str) -> Result<()> {
-        let max_attempts = 10;
-        let retry_interval = Duration::from_secs(2);
-
-        info!("Starting container health check for container: {}", container_id);
-
-        for attempt in 1..=max_attempts {
-            self.state.emit_event(Event::HealthCheck {
-                project_id: project.id,
-                build_id: build.id,
-                attempt,
-                max_attempts,
-                status: "Checking".to_string(),
-                url: format!("container://{}", container_id),
-                timestamp: Event::now(),
-            });
-
-            // Check if container is running
-            let is_running = self.docker.is_container_running(&container_id).await;
-
-            if is_running {
-                info!("Container health check passed on attempt {}/{} - Container is running", attempt, max_attempts);
-
-                self.state.emit_event(Event::HealthCheck {
-                    project_id: project.id,
-                    build_id: build.id,
-                    attempt,
-                    max_attempts,
-                    status: "Success".to_string(),
-                    url: format!("container://{}", container_id),
-                    timestamp: Event::now(),
-                });
-
-                return Ok(());
-            } else {
-                warn!(
-                    "Container health check failed on attempt {}/{} - Container is not running",
-                    attempt,
-                    max_attempts
-                );
-            }
-
-            if attempt < max_attempts {
-                sleep(retry_interval).await;
-            }
-        }
-
-        self.state.emit_event(Event::HealthCheck {
+        self.state.emit_event(Event::Deployment {
             project_id: project.id,
+            project_name: project.name.clone(),
             build_id: build.id,
-            attempt: max_attempts,
-            max_attempts,
-            status: "Failed".to_string(),
-            url: format!("container://{}", container_id),
+            status: "Success".to_string(),
+            slot: target_slot,
+            url: format!("https://app.yourdomain.com/{}/", project.name),
             timestamp: Event::now(),
         });
 
-        anyhow::bail!("Health check timed out after {} attempts", max_attempts)
+        self.state.emit_event(Event::BuildStatus {
+            build_id: build.id,
+            project_id: project.id,
+            status: BuildStatus::Success,
+            timestamp: Event::now(),
+        });
+
+        // Stop old container (the previous active slot, opposite of target_slot)
+        let old_slot = project.active_slot;
+        let old_container_id = match old_slot {
+            Slot::Blue => project.blue_container_id.clone(),
+            Slot::Green => project.green_container_id.clone(),
+        };
+
+        if let Some(old_id) = old_container_id {
+            info!("Stopping old {} container: {}", old_slot, old_id);
+            write_log!(format!("Stopping old {} container: {}", old_slot, old_id));
+            self.docker.stop_container(&old_id).await.ok();
+            self.docker.remove_container(&old_id).await.ok();
+
+            // Clear old container ID from database
+            match old_slot {
+                Slot::Blue => {
+                    self.state
+                        .db
+                        .update_project_blue_container(project.id, None)
+                        .await?;
+                }
+                Slot::Green => {
+                    self.state
+                        .db
+                        .update_project_green_container(project.id, None)
+                        .await?;
+                }
+            }
+        }
+
+        write_log!("Deployment completed successfully");
+        Ok(())
     }
 }

@@ -83,6 +83,16 @@
         }
       }
 
+      // Handle project container status updates (from start/stop/restart APIs)
+      if (data.type === 'container_status') {
+        console.log('📡 [WebSocket] 프로젝트 컨테이너 상태 업데이트, 프로젝트 ID:', data.project_id, '슬롯:', data.slot, '상태:', data.status);
+
+        // Reload projects to get updated container state from database
+        // Note: start/stop events don't include actual Docker container IDs,
+        // so we need to refresh the full project data
+        loadProjects();
+      }
+
       // Handle project container status updates (Blue/Green)
       if (data.type === 'project_container_status') {
         console.log('📡 [WebSocket] 프로젝트 컨테이너 상태 업데이트, 프로젝트 ID:', data.project_id, '슬롯:', data.slot, '상태:', data.status);

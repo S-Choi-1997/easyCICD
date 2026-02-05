@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{delete, get, post, put},
@@ -11,10 +11,12 @@ use tokio::{fs, process::Command};
 use tracing::{info, warn};
 
 use crate::db::models::{CreateBuild, CreateProject, Project, Slot, UpdateProject};
+use crate::events::Event;
+use crate::application::events::EventBus;
 use crate::github::client::GitHubClient;
 use crate::state::AppContext;
 use crate::infrastructure::logging::{TraceContext, Timer};
-use crate::application::ports::repositories::{ProjectRepository, BuildRepository, SettingsRepository};
+use crate::application::ports::repositories::{ProjectRepository, BuildRepository, SettingsRepository, GitHubPatRepository};
 
 pub fn projects_routes() -> Router<AppContext> {
     Router::new()
@@ -113,6 +115,8 @@ struct CreateProjectRequest {
     runtime_port: i32,
     build_env_vars: Option<String>,
     runtime_env_vars: Option<String>,
+    github_pat_id: Option<i64>,
+    discord_webhook_id: Option<i64>,
 }
 
 async fn create_project(
@@ -126,6 +130,7 @@ async fn create_project(
     ctx.logger.api_entry(&trace_id, "POST", "/api/projects", &format!("name={}", req.name));
 
     let repo_url = req.repo.clone();
+    let github_pat_id = req.github_pat_id;
     let create_project = CreateProject {
         name: req.name,
         repo: req.repo,
@@ -141,6 +146,8 @@ async fn create_project(
         runtime_port: req.runtime_port,
         build_env_vars: req.build_env_vars,
         runtime_env_vars: req.runtime_env_vars,
+        github_pat_id,
+        discord_webhook_id: req.discord_webhook_id,
     };
 
     let project = match ctx.project_repo.create(create_project).await {
@@ -172,10 +179,16 @@ async fn register_github_webhook(
     project_id: i64,
     repo_url: &str,
 ) -> Result<(), String> {
-    // Get required settings
-    let github_token = ctx.settings_repo.get("github_token").await
-        .map_err(|e| format!("Failed to get GitHub token: {}", e))?
-        .ok_or("GitHub token not configured")?;
+    // Resolve PAT: try project-specific PAT first, then fallback to legacy settings
+    let github_token = match ctx.github_pat_repo.get_token_for_project(project_id).await {
+        Ok(Some(token)) => token,
+        _ => {
+            // Fallback to legacy global PAT
+            ctx.settings_repo.get("github_pat").await
+                .map_err(|e| format!("Failed to get GitHub token: {}", e))?
+                .ok_or("GitHub token not configured")?
+        }
+    };
 
     let webhook_url = ctx.settings_repo.get("webhook_url").await
         .map_err(|e| format!("Failed to get webhook URL: {}", e))?
@@ -251,13 +264,19 @@ fn parse_repo_owner_name(repo_url: &str) -> Option<(String, String)> {
 async fn delete_github_webhook(
     ctx: &AppContext,
     trace_id: &str,
+    project_id: i64,
     repo_url: &str,
     webhook_id: i64,
 ) -> Result<(), String> {
-    // Get GitHub token
-    let github_token = ctx.settings_repo.get("github_token").await
-        .map_err(|e| format!("Failed to get GitHub token: {}", e))?
-        .ok_or("GitHub token not configured")?;
+    // Resolve PAT: try project-specific PAT first, then fallback to legacy settings
+    let github_token = match ctx.github_pat_repo.get_token_for_project(project_id).await {
+        Ok(Some(token)) => token,
+        _ => {
+            ctx.settings_repo.get("github_pat").await
+                .map_err(|e| format!("Failed to get GitHub token: {}", e))?
+                .ok_or("GitHub token not configured")?
+        }
+    };
 
     // Parse owner/repo from repo URL
     let (owner, repo) = parse_repo_owner_name(repo_url)
@@ -292,6 +311,10 @@ struct UpdateProjectRequest {
     runtime_port: Option<i32>,
     build_env_vars: Option<String>,
     runtime_env_vars: Option<String>,
+    #[serde(default)]
+    github_pat_id: Option<Option<i64>>,
+    #[serde(default)]
+    discord_webhook_id: Option<Option<i64>>,
 }
 
 async fn update_project(
@@ -340,6 +363,8 @@ async fn update_project(
         health_check_url: req.health_check_url,
         runtime_port: req.runtime_port,
         runtime_env_vars: req.runtime_env_vars,
+        github_pat_id: req.github_pat_id,
+        discord_webhook_id: req.discord_webhook_id,
     };
 
     match ctx.project_repo.update(id, update).await {
@@ -521,7 +546,7 @@ async fn delete_project(
 
     // Delete GitHub webhook if exists
     if let Some(webhook_id) = project.github_webhook_id {
-        if let Err(e) = delete_github_webhook(&ctx, &trace_id, &project.repo, webhook_id).await {
+        if let Err(e) = delete_github_webhook(&ctx, &trace_id, project.id, &project.repo, webhook_id).await {
             warn!("[{}] Failed to delete GitHub webhook: {}", trace_id, e);
             // Continue with project deletion even if webhook deletion fails
         }
@@ -645,6 +670,16 @@ async fn start_containers(
         match ctx.docker.start_container(&container_name).await {
             Ok(_) => {
                 info!("[{}] Started container: {}", trace_id, container_name);
+
+                // Emit ContainerStatus event for WebSocket clients
+                let event = Event::container_status(
+                    project.id,
+                    container_name.clone(),
+                    slot,
+                    "running".to_string(),
+                );
+                ctx.event_bus.emit(event).await;
+
                 results.push(serde_json::json!({
                     "slot": format!("{:?}", slot).to_lowercase(),
                     "status": "started",
@@ -709,6 +744,16 @@ async fn stop_containers(
         match ctx.docker.stop_container(&container_name).await {
             Ok(_) => {
                 info!("[{}] Stopped container: {}", trace_id, container_name);
+
+                // Emit ContainerStatus event for WebSocket clients
+                let event = Event::container_status(
+                    project.id,
+                    container_name.clone(),
+                    slot,
+                    "stopped".to_string(),
+                );
+                ctx.event_bus.emit(event).await;
+
                 results.push(serde_json::json!({
                     "slot": format!("{:?}", slot).to_lowercase(),
                     "status": "stopped",
@@ -773,6 +818,16 @@ async fn restart_containers(
         match ctx.docker.restart_container(&container_name).await {
             Ok(_) => {
                 info!("[{}] Restarted container: {}", trace_id, container_name);
+
+                // Emit ContainerStatus event for WebSocket clients
+                let event = Event::container_status(
+                    project.id,
+                    container_name.clone(),
+                    slot,
+                    "running".to_string(),
+                );
+                ctx.event_bus.emit(event).await;
+
                 results.push(serde_json::json!({
                     "slot": format!("{:?}", slot).to_lowercase(),
                     "status": "restarted",
@@ -882,17 +937,24 @@ use axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
 
+#[derive(Deserialize)]
+struct RuntimeLogsQuery {
+    tail: Option<String>,
+}
+
 async fn runtime_logs(
     State(ctx): State<AppContext>,
     headers: HeaderMap,
     Path(project_id): Path<i64>,
+    Query(query): Query<RuntimeLogsQuery>,
     ws: WebSocketUpgrade,
 ) -> Response {
     let trace_id = TraceContext::extract_or_generate(&headers);
+    let tail = query.tail;
 
-    ctx.logger.api_entry(&trace_id, "GET", &format!("/api/projects/{}/runtime-logs", project_id), &format!("project_id={}", project_id));
+    ctx.logger.api_entry(&trace_id, "GET", &format!("/api/projects/{}/runtime-logs", project_id), &format!("project_id={}, tail={:?}", project_id, tail));
 
-    ws.on_upgrade(move |socket| runtime_logs_stream(socket, ctx, trace_id, project_id))
+    ws.on_upgrade(move |socket| runtime_logs_stream(socket, ctx, trace_id, project_id, tail))
 }
 
 async fn runtime_logs_stream(
@@ -900,6 +962,7 @@ async fn runtime_logs_stream(
     ctx: AppContext,
     trace_id: String,
     project_id: i64,
+    tail: Option<String>,
 ) {
     info!("[{}] WebSocket connected for runtime logs of project {}", trace_id, project_id);
 
@@ -940,7 +1003,7 @@ async fn runtime_logs_stream(
     info!("[{}] Streaming logs from container: {}", trace_id, container_id);
 
     // Stream Docker logs
-    match ctx.docker.stream_container_logs(&container_id).await {
+    match ctx.docker.stream_container_logs(&container_id, tail.as_deref()).await {
         Ok(mut stream) => {
             let (mut ws_sender, mut ws_receiver) = socket.split();
 

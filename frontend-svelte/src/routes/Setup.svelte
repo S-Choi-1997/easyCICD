@@ -4,8 +4,19 @@
 
     const API_BASE = '/api';
 
-    // GitHub PAT
-    let githubPAT = '';
+    // GitHub PAT (multiple PAT support)
+    let pats = [];
+    let selectedPatId = null;
+    let newPatLabel = '';
+    let newPatToken = '';
+    let showNewPatForm = false;
+    let patSaving = false;
+
+    // Discord webhooks
+    let discordWebhooks = [];
+    let selectedDiscordWebhookId = null;
+
+    // Legacy PAT (backward compat)
     let patConfigured = false;
     let githubUsername = '';
 
@@ -47,11 +58,41 @@ runtime_port = "8080"
 health_check_url = "/"`;
 
     onMount(async () => {
-        await checkPATStatus();
-        if (patConfigured) {
+        await loadPats();
+        await loadDiscordWebhooks();
+        if (pats.length > 0) {
+            selectedPatId = pats[0].id;
+            patConfigured = true;
+            githubUsername = pats[0].github_username || '';
             await loadRepositories();
+        } else {
+            // Fallback: check legacy PAT
+            await checkPATStatus();
+            if (patConfigured) {
+                await loadRepositories();
+            }
         }
     });
+
+    async function loadPats() {
+        try {
+            const response = await fetch(`${API_BASE}/github/pats`);
+            const data = await response.json();
+            pats = data.pats || [];
+        } catch (error) {
+            console.error('PAT 목록 로드 실패:', error);
+        }
+    }
+
+    async function loadDiscordWebhooks() {
+        try {
+            const response = await fetch(`${API_BASE}/discord-webhooks`);
+            const data = await response.json();
+            discordWebhooks = (data.webhooks || []).filter(w => w.enabled);
+        } catch (error) {
+            console.error('Discord 웹훅 로드 실패:', error);
+        }
+    }
 
     async function checkPATStatus() {
         try {
@@ -64,59 +105,139 @@ health_check_url = "/"`;
         }
     }
 
-    async function savePAT() {
-        if (!githubPAT.trim()) {
-            return;
-        }
+    async function createPat() {
+        if (!newPatLabel.trim() || !newPatToken.trim()) return;
+        patSaving = true;
 
         try {
-            const response = await fetch(`${API_BASE}/settings/github-pat`, {
+            const response = await fetch(`${API_BASE}/github/pats`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ github_pat: githubPAT }),
+                body: JSON.stringify({ label: newPatLabel, token: newPatToken }),
             });
 
             const data = await response.json();
-
             if (response.ok) {
+                await loadPats();
+                selectedPatId = data.id;
                 patConfigured = true;
-                githubUsername = data.github_username;
+                githubUsername = data.github_username || '';
+                newPatLabel = '';
+                newPatToken = '';
+                showNewPatForm = false;
                 await loadRepositories();
+            } else {
+                alert(data.error || 'PAT 저장 실패');
             }
         } catch (error) {
-            console.error(error);
+            console.error('PAT 생성 실패:', error);
+        } finally {
+            patSaving = false;
         }
     }
 
-    async function deletePAT() {
-        if (!confirm('GitHub PAT를 삭제하시겠습니까? 레포지토리 목록을 다시 불러올 수 없게 됩니다.')) {
-            return;
-        }
+    async function deletePat(patId) {
+        if (!confirm('이 PAT를 삭제하시겠습니까?')) return;
 
         try {
-            const response = await fetch(`${API_BASE}/settings/github-pat`, {
+            const response = await fetch(`${API_BASE}/github/pats/${patId}`, {
                 method: 'DELETE',
             });
 
             if (response.ok) {
-                patConfigured = false;
-                githubUsername = '';
-                repositories = [];
-                branches = [];
-                selectedRepo = '';
-                selectedBranch = '';
-                detectedConfig = null;
+                await loadPats();
+                if (pats.length > 0) {
+                    selectedPatId = pats[0].id;
+                    githubUsername = pats[0].github_username || '';
+                    await loadRepositories();
+                } else {
+                    selectedPatId = null;
+                    patConfigured = false;
+                    githubUsername = '';
+                    repositories = [];
+                    branches = [];
+                    selectedRepo = '';
+                    selectedBranch = '';
+                    detectedConfig = null;
+                }
+            } else {
+                const data = await response.json();
+                alert(data.error || 'PAT 삭제 실패');
             }
         } catch (error) {
             console.error('PAT 삭제 실패:', error);
         }
     }
 
+    async function onPatChange() {
+        if (!selectedPatId) return;
+        const pat = pats.find(p => p.id === selectedPatId);
+        if (pat) {
+            githubUsername = pat.github_username || '';
+        }
+        // 레포지토리 목록은 이미 모든 PAT의 합이므로 다시 로드할 필요 없음
+        // 단, 브랜치 등 선택은 리셋
+        branches = [];
+        selectedRepo = '';
+        selectedBranch = '';
+        detectedConfig = null;
+    }
+
+    // 레포지토리별 PAT ID 매핑 (레포지토리가 어떤 PAT로 접근 가능한지 저장)
+    let repoToPatMap = new Map();
+
     async function loadRepositories() {
         try {
-            const response = await fetch(`${API_BASE}/github/repositories`);
-            const data = await response.json();
-            repositories = data.repositories || [];
+            // 모든 PAT의 레포지토리를 합쳐서 가져오기
+            const allRepos = new Map(); // full_name을 키로 사용하여 중복 제거
+            repoToPatMap = new Map();
+
+            if (pats.length === 0) {
+                // PAT가 없으면 레거시 글로벌 PAT 사용
+                const response = await fetch(`${API_BASE}/github/repositories`);
+                const data = await response.json();
+                (data.repositories || []).forEach(repo => {
+                    allRepos.set(repo.full_name, repo);
+                    repoToPatMap.set(repo.full_name, null); // legacy PAT
+                });
+            } else {
+                // 모든 PAT에 대해 레포지토리 가져오기
+                console.log(`총 ${pats.length}개의 PAT에서 레포지토리 로드 시작`);
+                for (const pat of pats) {
+                    console.log(`PAT "${pat.label}" (ID: ${pat.id})에서 레포지토리 로드 중...`);
+                    try {
+                        const response = await fetch(`${API_BASE}/github/repositories?pat_id=${pat.id}`);
+                        if (!response.ok) {
+                            const errorData = await response.json();
+                            const errorMsg = errorData.error || `${response.status} ${response.statusText}`;
+                            console.error(`PAT "${pat.label}" 오류: ${errorMsg}`, errorData.detail || '');
+                            if (response.status === 401) {
+                                console.warn(`⚠️ PAT "${pat.label}"이 유효하지 않거나 만료되었습니다. 이 PAT를 삭제하고 새로 생성하세요.`);
+                            }
+                            continue;
+                        }
+                        const data = await response.json();
+                        const repoCount = (data.repositories || []).length;
+                        console.log(`PAT "${pat.label}"에서 ${repoCount}개 레포지토리 받음`);
+                        (data.repositories || []).forEach(repo => {
+                            if (!allRepos.has(repo.full_name)) {
+                                allRepos.set(repo.full_name, repo);
+                                repoToPatMap.set(repo.full_name, pat.id);
+                            }
+                            // 이미 있으면 첫 번째 PAT 우선 (중복 시 먼저 발견된 PAT 사용)
+                        });
+                    } catch (error) {
+                        console.error(`PAT ${pat.label} 레포지토리 로드 실패:`, error);
+                    }
+                }
+            }
+
+            // Map을 배열로 변환하고 updated_at 기준으로 정렬
+            repositories = Array.from(allRepos.values()).sort((a, b) =>
+                new Date(b.updated_at) - new Date(a.updated_at)
+            );
+
+            console.log(`총 ${repositories.length}개의 레포지토리 로드됨 (${pats.length}개 PAT)`);
         } catch (error) {
             console.error('레포지토리 로드 실패:', error);
         }
@@ -125,10 +246,22 @@ health_check_url = "/"`;
     async function onRepoChange() {
         if (!selectedRepo) return;
 
+        // 이 레포지토리에 접근 가능한 PAT 자동 선택
+        const repoPatId = repoToPatMap.get(selectedRepo);
+        if (repoPatId && repoPatId !== selectedPatId) {
+            selectedPatId = repoPatId;
+            const pat = pats.find(p => p.id === repoPatId);
+            if (pat) {
+                githubUsername = pat.github_username || '';
+                console.log(`레포지토리 ${selectedRepo}에 대해 PAT "${pat.label}" 자동 선택`);
+            }
+        }
+
         const [owner, repo] = selectedRepo.split('/');
         try {
+            const patParam = selectedPatId ? `&pat_id=${selectedPatId}` : '';
             const response = await fetch(
-                `${API_BASE}/github/branches?owner=${owner}&repo=${repo}`
+                `${API_BASE}/github/branches?owner=${owner}&repo=${repo}${patParam}`
             );
             const data = await response.json();
             branches = data.branches || [];
@@ -163,6 +296,10 @@ health_check_url = "/"`;
                 repo,
                 branch: selectedBranch,
             });
+
+            if (selectedPatId) {
+                params.append('pat_id', selectedPatId);
+            }
 
             if (workingDirectory) {
                 params.append('path_filter', workingDirectory);
@@ -293,6 +430,8 @@ health_check_url = "${config.health_check_url || ''}"`;
             runtime_env_vars: Object.keys(parseEnvVars(runtimeEnvVars)).length > 0
               ? JSON.stringify(parseEnvVars(runtimeEnvVars))
               : null,
+            github_pat_id: selectedPatId || null,
+            discord_webhook_id: selectedDiscordWebhookId || null,
         };
 
         try {
@@ -346,27 +485,96 @@ health_check_url = "${config.health_check_url || ''}"`;
                 <div class="section-header">
                     <h3>GitHub 연동</h3>
                     {#if patConfigured}
-                        <div class="pat-connected-section">
-                            <span class="status-badge connected">✓ 연결됨 ({githubUsername})</span>
-                            <button on:click={deletePAT} class="btn btn-danger btn-sm">PAT 삭제</button>
-                        </div>
+                        <span class="status-badge connected">✓ 연결됨 ({githubUsername})</span>
                     {/if}
                 </div>
-                {#if !patConfigured}
-                    <span class="status-badge disconnected">× 연결 안됨</span>
-                    <div class="input-group">
-                        <input
-                            type="password"
-                            bind:value={githubPAT}
-                            placeholder="GitHub Personal Access Token"
-                            class="form-input"
-                        />
-                        <button on:click={savePAT} class="btn btn-primary">PAT 저장</button>
+
+                {#if pats.length > 0}
+                    <!-- PAT Selector -->
+                    <div class="form-group">
+                        <label for="patSelect">PAT 선택</label>
+                        <div class="pat-selector-row">
+                            <select id="patSelect" bind:value={selectedPatId} on:change={onPatChange} class="form-input">
+                                {#each pats as pat}
+                                    <option value={pat.id}>
+                                        {pat.label} ({pat.github_username || pat.token_preview})
+                                    </option>
+                                {/each}
+                            </select>
+                            <button on:click={() => deletePat(selectedPatId)} class="btn btn-danger btn-sm">삭제</button>
+                        </div>
                     </div>
+                {/if}
+
+                <!-- New PAT Form Toggle -->
+                {#if !showNewPatForm}
+                    <button on:click={() => showNewPatForm = true} class="btn btn-secondary btn-sm">
+                        + 새 PAT 추가
+                    </button>
+                {:else}
+                    <div class="new-pat-form">
+                        <div class="form-group">
+                            <label for="patLabel">PAT 이름</label>
+                            <input
+                                type="text"
+                                id="patLabel"
+                                bind:value={newPatLabel}
+                                placeholder="예: Team A PAT"
+                                class="form-input"
+                            />
+                        </div>
+                        <div class="form-group">
+                            <label for="patToken">Token</label>
+                            <input
+                                type="password"
+                                id="patToken"
+                                bind:value={newPatToken}
+                                placeholder="ghp_xxxxxxxxxxxx"
+                                class="form-input"
+                            />
+                        </div>
+                        <div class="pat-form-actions">
+                            <button on:click={() => { showNewPatForm = false; newPatLabel = ''; newPatToken = ''; }} class="btn btn-secondary btn-sm">취소</button>
+                            <button on:click={createPat} class="btn btn-primary btn-sm" disabled={patSaving}>
+                                {patSaving ? '저장 중...' : 'PAT 저장'}
+                            </button>
+                        </div>
+                        <p class="form-help">
+                            <a href="https://github.com/settings/tokens/new?scopes=repo,read:user" target="_blank">
+                                GitHub PAT 생성하기 →
+                            </a>
+                        </p>
+                    </div>
+                {/if}
+
+                {#if pats.length === 0 && !showNewPatForm}
+                    <span class="status-badge disconnected" style="margin-top: 0.5rem;">× 연결 안됨</span>
+                    <p class="form-help">프로젝트를 등록하려면 GitHub PAT를 추가하세요.</p>
+                {/if}
+            </div>
+
+            <!-- Discord Webhook Section (Optional) -->
+            <div class="section-box">
+                <div class="section-header">
+                    <h3>Discord 알림 (선택사항)</h3>
+                </div>
+
+                {#if discordWebhooks.length > 0}
+                    <div class="form-group">
+                        <label for="discordWebhook">Discord 웹훅</label>
+                        <select id="discordWebhook" bind:value={selectedDiscordWebhookId} class="form-input">
+                            <option value={null}>알림 사용 안 함</option>
+                            {#each discordWebhooks as webhook}
+                                <option value={webhook.id}>
+                                    {webhook.label}
+                                </option>
+                            {/each}
+                        </select>
+                        <span class="form-help">빌드 및 배포 상태를 Discord로 알림받습니다.</span>
+                    </div>
+                {:else}
                     <p class="form-help">
-                        <a href="https://github.com/settings/tokens/new?scopes=repo,read:user" target="_blank">
-                            GitHub PAT 생성하기 →
-                        </a>
+                        <a href="#/settings" use:link>설정</a>에서 Discord 웹훅을 먼저 등록하세요.
                     </p>
                 {/if}
             </div>
@@ -743,6 +951,30 @@ health_check_url = "${config.health_check_url || ''}"`;
         display: flex;
         align-items: center;
         gap: 0.75rem;
+    }
+
+    .pat-selector-row {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+    }
+
+    .pat-selector-row .form-input {
+        flex: 1;
+    }
+
+    .new-pat-form {
+        margin-top: 1rem;
+        padding: 1rem;
+        background: #f9fafb;
+        border-radius: 0.375rem;
+        border: 1px solid #e5e7eb;
+    }
+
+    .pat-form-actions {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 0.75rem;
     }
 
     /* Detect Container */

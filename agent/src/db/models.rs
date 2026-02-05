@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Slot {
     Blue,
     Green,
@@ -145,8 +145,14 @@ pub struct Project {
     #[sqlx(try_from = "String")]
     pub deployment_status: DeploymentStatus,
 
+    // GitHub PAT
+    pub github_pat_id: Option<i64>,
+
     // GitHub webhook
     pub github_webhook_id: Option<i64>,
+
+    // Discord webhook
+    pub discord_webhook_id: Option<i64>,
 
     // Timestamps
     pub created_at: String,
@@ -236,6 +242,8 @@ pub struct CreateProject {
     pub health_check_url: String,
     pub runtime_port: i32,
     pub runtime_env_vars: Option<String>,
+    pub github_pat_id: Option<i64>,
+    pub discord_webhook_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,6 +264,10 @@ pub struct UpdateProject {
     pub health_check_url: Option<String>,
     pub runtime_port: Option<i32>,
     pub runtime_env_vars: Option<String>,
+    #[serde(default)]
+    pub github_pat_id: Option<Option<i64>>,
+    #[serde(default)]
+    pub discord_webhook_id: Option<Option<i64>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -523,4 +535,60 @@ pub struct CreateSession {
     pub id: String,
     pub user_id: i64,
     pub expires_at: String,
+}
+
+// ============================================================================
+// GitHub PAT Models
+// ============================================================================
+
+/// GitHub PAT model
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct GitHubPat {
+    pub id: i64,
+    pub label: String,
+    pub token: String,
+    pub github_username: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Create GitHub PAT request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateGitHubPat {
+    pub label: String,
+    pub token: String,
+    pub github_username: Option<String>,
+}
+
+/// GitHub PAT summary (token masked for API responses)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubPatSummary {
+    pub id: i64,
+    pub label: String,
+    pub github_username: Option<String>,
+    pub token_preview: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<GitHubPat> for GitHubPatSummary {
+    fn from(pat: GitHubPat) -> Self {
+        let token_preview = if pat.token.len() > 8 {
+            format!(
+                "{}****{}",
+                pat.token.get(..4).unwrap_or(""),
+                pat.token.get(pat.token.len()-4..).unwrap_or("")
+            )
+        } else {
+            "****".to_string()
+        };
+        Self {
+            id: pat.id,
+            label: pat.label,
+            github_username: pat.github_username,
+            token_preview,
+            created_at: pat.created_at,
+            updated_at: pat.updated_at,
+        }
+    }
 }

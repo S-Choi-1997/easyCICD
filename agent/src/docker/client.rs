@@ -819,14 +819,15 @@ impl DockerClient {
     }
 
     /// 컨테이너 로그 스트리밍 (실시간 로그)
-    pub async fn stream_container_logs(&self, container_id: &str) -> Result<impl futures_util::Stream<Item = Result<Vec<u8>, bollard::errors::Error>>> {
+    /// tail: 초기 로드할 로그 줄 수 (None이면 기본 500줄, Some("all")이면 전체)
+    pub async fn stream_container_logs(&self, container_id: &str, tail: Option<&str>) -> Result<impl futures_util::Stream<Item = Result<Vec<u8>, bollard::errors::Error>>> {
         use bollard::container::LogsOptions;
 
         let options = Some(LogsOptions::<String> {
             follow: true,
             stdout: true,
             stderr: true,
-            tail: "all".to_string(),  // 전체 로그
+            tail: tail.unwrap_or("500").to_string(),
             ..Default::default()
         });
 

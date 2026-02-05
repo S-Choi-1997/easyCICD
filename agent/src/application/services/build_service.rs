@@ -6,7 +6,7 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tracing::{info, warn};
 
-use crate::application::ports::repositories::{BuildRepository, ProjectRepository, SettingsRepository};
+use crate::application::ports::repositories::{BuildRepository, ProjectRepository, SettingsRepository, GitHubPatRepository};
 use crate::application::events::{EventBus, Event};
 use crate::db::models::{BuildStatus, Project, Build};
 use crate::docker::DockerClient;
@@ -20,32 +20,36 @@ use crate::infrastructure::logging::{BoundaryLogger, Timer};
 /// - 빌드 로그 수집 및 저장
 /// - 빌드 상태 업데이트
 /// - 이벤트 발행
-pub struct BuildService<BR, PR, SR, EB>
+pub struct BuildService<BR, PR, SR, GPR, EB>
 where
     BR: BuildRepository,
     PR: ProjectRepository,
     SR: SettingsRepository,
+    GPR: GitHubPatRepository,
     EB: EventBus,
 {
     build_repo: Arc<BR>,
     project_repo: Arc<PR>,
     settings_repo: Arc<SR>,
+    github_pat_repo: Arc<GPR>,
     event_bus: EB,
     docker: DockerClient,
     logger: Arc<BoundaryLogger>,
 }
 
-impl<BR, PR, SR, EB> BuildService<BR, PR, SR, EB>
+impl<BR, PR, SR, GPR, EB> BuildService<BR, PR, SR, GPR, EB>
 where
     BR: BuildRepository,
     PR: ProjectRepository,
     SR: SettingsRepository,
+    GPR: GitHubPatRepository,
     EB: EventBus,
 {
     pub fn new(
         build_repo: Arc<BR>,
         project_repo: Arc<PR>,
         settings_repo: Arc<SR>,
+        github_pat_repo: Arc<GPR>,
         event_bus: EB,
         docker: DockerClient,
         logger: Arc<BoundaryLogger>,
@@ -54,6 +58,7 @@ where
             build_repo,
             project_repo,
             settings_repo,
+            github_pat_repo,
             event_bus,
             docker,
             logger,
@@ -116,7 +121,15 @@ where
         fs::create_dir_all(log_path.parent().unwrap()).await.context("Failed to create log directory")?;
 
         // Get GitHub PAT for git authentication inside container
-        let github_token = self.settings_repo.get("github_pat").await.ok().flatten();
+        // Try project-specific PAT first, then fallback to legacy global PAT
+        let github_token = if let Some(pat_id) = project.github_pat_id {
+            match self.github_pat_repo.get(pat_id).await {
+                Ok(Some(pat)) => Some(pat.token),
+                _ => self.settings_repo.get("github_pat").await.ok().flatten(),
+            }
+        } else {
+            self.settings_repo.get("github_pat").await.ok().flatten()
+        };
 
         // Build authenticated repo URL
         let authenticated_repo = if let Some(token) = &github_token {
