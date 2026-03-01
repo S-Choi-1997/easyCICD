@@ -100,6 +100,11 @@ pub async fn set_domain(
         );
     }
 
+    tracing::info!(
+        target: "audit",
+        event = "settings.domain_changed",
+        domain = %domain,
+    );
     ctx.logger.api_exit(&trace_id, "POST", "/api/settings/domain", timer.elapsed_ms(), 200);
     (
         StatusCode::OK,
@@ -470,6 +475,12 @@ pub async fn add_allowed_email(
         );
     }
 
+    tracing::info!(
+        target: "audit",
+        event = "whitelist.email_added",
+        email = %email,
+        total_count = emails.len(),
+    );
     ctx.logger.api_exit(&trace_id, "POST", "/api/settings/allowed-emails", timer.elapsed_ms(), 200);
     (
         StatusCode::OK,
@@ -520,6 +531,12 @@ pub async fn remove_allowed_email(
         );
     }
 
+    tracing::info!(
+        target: "audit",
+        event = "whitelist.email_removed",
+        email = %email,
+        remaining_count = emails.len(),
+    );
     ctx.logger.api_exit(&trace_id, "DELETE", "/api/settings/allowed-emails", timer.elapsed_ms(), 200);
     (
         StatusCode::OK,
@@ -550,34 +567,43 @@ pub async fn get_server_ip(
 
     ctx.logger.api_entry(&trace_id, "GET", "/api/settings/server-ip", "");
 
-    // Try to get server's public IP from external service
-    let server_ip = match reqwest::blocking::get("https://api.ipify.org")
-        .and_then(|resp| resp.text())
-    {
-        Ok(ip) => {
-            let trimmed = ip.trim().to_string();
-            if !trimmed.is_empty() && trimmed != "127.0.0.1" {
-                trimmed
-            } else {
-                "localhost".to_string()
+    // Try to get server's public IP from external service with timeout
+    let server_ip = match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        reqwest::get("https://api.ipify.org")
+    ).await {
+        Ok(Ok(response)) => {
+            match response.text().await {
+                Ok(ip) => {
+                    let trimmed = ip.trim().to_string();
+                    tracing::info!("[{}] ipify.org 응답: {}", trace_id, trimmed);
+
+                    // Don't filter out 172.x IPs anymore - just filter localhost
+                    if !trimmed.is_empty() && !trimmed.starts_with("127.") {
+                        tracing::info!("[{}] ipify IP 사용: {}", trace_id, trimmed);
+                        trimmed
+                    } else {
+                        // Fallback to hostname -I
+                        tracing::info!("[{}] ipify IP가 localhost이므로 폴백 사용", trace_id);
+                        let fallback = get_fallback_ip();
+                        tracing::info!("[{}] 폴백 IP: {}", trace_id, fallback);
+                        fallback
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("[{}] ipify.org 응답 파싱 실패: {}, 폴백 사용", trace_id, e);
+                    let fallback = get_fallback_ip();
+                    tracing::info!("[{}] 폴백 IP: {}", trace_id, fallback);
+                    fallback
+                }
             }
         }
-        Err(_) => {
-            // Fallback: try hostname -I
-            match std::process::Command::new("hostname")
-                .arg("-I")
-                .output()
-            {
-                Ok(output) => {
-                    let ip_string = String::from_utf8_lossy(&output.stdout);
-                    ip_string
-                        .split_whitespace()
-                        .find(|ip| !ip.starts_with("172.") && !ip.starts_with("127."))
-                        .unwrap_or("localhost")
-                        .to_string()
-                }
-                Err(_) => "localhost".to_string(),
-            }
+        Ok(Err(_)) | Err(_) => {
+            // ipify.org failed or timed out, use hostname -I fallback
+            tracing::warn!("[{}] ipify.org 실패 또는 타임아웃, 폴백 사용", trace_id);
+            let fallback = get_fallback_ip();
+            tracing::info!("[{}] 폴백 IP: {}", trace_id, fallback);
+            fallback
         }
     };
 
@@ -586,4 +612,19 @@ pub async fn get_server_ip(
         StatusCode::OK,
         Json(ServerIpResponse { server_ip }),
     )
+}
+
+fn get_fallback_ip() -> String {
+    match std::process::Command::new("hostname").arg("-I").output() {
+        Ok(output) => {
+            let ip_string = String::from_utf8_lossy(&output.stdout);
+            // Don't filter out any IPs - just take the first one
+            ip_string
+                .split_whitespace()
+                .next()
+                .unwrap_or("localhost")
+                .to_string()
+        }
+        Err(_) => "localhost".to_string(),
+    }
 }

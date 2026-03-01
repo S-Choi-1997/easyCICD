@@ -41,13 +41,7 @@
 
     // Subscribe to WebSocket for build status updates
     unsubscribeWs = subscribe('project-detail', (data) => {
-      console.log('📡 [ProjectDetail] WebSocket 이벤트:', data.type, data);
-
-      // Update builds list on build status change
       if (data.type === 'build_status' && data.project_id === parseInt(projectId)) {
-        console.log('📡 [ProjectDetail] 빌드 상태 업데이트:', data.build_id, data.status);
-
-        // Update specific build in the list
         builds = builds.map(build =>
           build.id === data.build_id
             ? { ...build, status: data.status }
@@ -55,10 +49,8 @@
         );
       }
 
-      // Refresh builds list on new build or deployment
       if ((data.type === 'deployment' || data.type === 'build_queued') &&
           data.project_id === parseInt(projectId)) {
-        console.log('📡 [ProjectDetail] 빌드 목록 새로고침');
         loadBuilds();
       }
     });

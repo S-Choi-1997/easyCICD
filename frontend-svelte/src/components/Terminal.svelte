@@ -103,9 +103,7 @@
 
     ws = new WebSocket(wsUrl);
 
-    ws.onopen = () => {
-      console.log('[Terminal] WebSocket connected');
-    };
+    ws.onopen = () => {};
 
     ws.onmessage = (event) => {
       try {

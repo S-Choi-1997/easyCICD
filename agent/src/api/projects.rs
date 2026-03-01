@@ -30,6 +30,18 @@ pub fn projects_routes() -> Router<AppContext> {
         .route("/{id}/containers/restart", post(restart_containers))
 }
 
+/// Docker 이미지 이름 유효성 검사.
+/// 허용 문자: alphanumeric, '/', ':', '.', '-', '_'
+/// 길이: 1~256자
+fn validate_docker_image(image: &str) -> bool {
+    if image.is_empty() || image.len() > 256 {
+        return false;
+    }
+    image.chars().all(|c| {
+        c.is_ascii_alphanumeric() || c == '/' || c == ':' || c == '.' || c == '-' || c == '_'
+    })
+}
+
 /// Project response with last build status
 #[derive(Serialize)]
 struct ProjectWithStatus {
@@ -128,6 +140,20 @@ async fn create_project(
     let timer = Timer::start();
 
     ctx.logger.api_entry(&trace_id, "POST", "/api/projects", &format!("name={}", req.name));
+
+    // 입력값 검증
+    if !validate_docker_image(&req.build_image) {
+        ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), 400);
+        return (StatusCode::BAD_REQUEST, Json(None));
+    }
+    if !validate_docker_image(&req.runtime_image) {
+        ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), 400);
+        return (StatusCode::BAD_REQUEST, Json(None));
+    }
+    if req.build_command.len() > 8192 {
+        ctx.logger.api_exit(&trace_id, "POST", "/api/projects", timer.elapsed_ms(), 400);
+        return (StatusCode::BAD_REQUEST, Json(None));
+    }
 
     let repo_url = req.repo.clone();
     let github_pat_id = req.github_pat_id;
@@ -327,6 +353,26 @@ async fn update_project(
     let timer = Timer::start();
 
     ctx.logger.api_entry(&trace_id, "PUT", &format!("/api/projects/{}", id), &format!("project_id={}", id));
+
+    // 입력값 검증 (Option 필드는 Some일 때만 검사)
+    if let Some(ref img) = req.build_image {
+        if !validate_docker_image(img) {
+            ctx.logger.api_exit(&trace_id, "PUT", &format!("/api/projects/{}", id), timer.elapsed_ms(), 400);
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid build_image format"})));
+        }
+    }
+    if let Some(ref img) = req.runtime_image {
+        if !validate_docker_image(img) {
+            ctx.logger.api_exit(&trace_id, "PUT", &format!("/api/projects/{}", id), timer.elapsed_ms(), 400);
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid runtime_image format"})));
+        }
+    }
+    if let Some(ref cmd) = req.build_command {
+        if cmd.len() > 8192 {
+            ctx.logger.api_exit(&trace_id, "PUT", &format!("/api/projects/{}", id), timer.elapsed_ms(), 400);
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "build_command too long"})));
+        }
+    }
 
     // Check if project exists
     match ctx.project_repo.get(id).await {

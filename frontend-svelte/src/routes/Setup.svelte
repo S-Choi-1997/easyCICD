@@ -202,23 +202,16 @@ health_check_url = "/"`;
                 });
             } else {
                 // 모든 PAT에 대해 레포지토리 가져오기
-                console.log(`총 ${pats.length}개의 PAT에서 레포지토리 로드 시작`);
                 for (const pat of pats) {
-                    console.log(`PAT "${pat.label}" (ID: ${pat.id})에서 레포지토리 로드 중...`);
                     try {
                         const response = await fetch(`${API_BASE}/github/repositories?pat_id=${pat.id}`);
                         if (!response.ok) {
-                            const errorData = await response.json();
-                            const errorMsg = errorData.error || `${response.status} ${response.statusText}`;
-                            console.error(`PAT "${pat.label}" 오류: ${errorMsg}`, errorData.detail || '');
                             if (response.status === 401) {
-                                console.warn(`⚠️ PAT "${pat.label}"이 유효하지 않거나 만료되었습니다. 이 PAT를 삭제하고 새로 생성하세요.`);
+                                console.warn(`PAT "${pat.label}" 인증 실패 - 재생성 필요`);
                             }
                             continue;
                         }
                         const data = await response.json();
-                        const repoCount = (data.repositories || []).length;
-                        console.log(`PAT "${pat.label}"에서 ${repoCount}개 레포지토리 받음`);
                         (data.repositories || []).forEach(repo => {
                             if (!allRepos.has(repo.full_name)) {
                                 allRepos.set(repo.full_name, repo);
@@ -227,7 +220,7 @@ health_check_url = "/"`;
                             // 이미 있으면 첫 번째 PAT 우선 (중복 시 먼저 발견된 PAT 사용)
                         });
                     } catch (error) {
-                        console.error(`PAT ${pat.label} 레포지토리 로드 실패:`, error);
+                        console.error(`PAT "${pat.label}" 로드 실패:`, error);
                     }
                 }
             }
@@ -237,7 +230,6 @@ health_check_url = "/"`;
                 new Date(b.updated_at) - new Date(a.updated_at)
             );
 
-            console.log(`총 ${repositories.length}개의 레포지토리 로드됨 (${pats.length}개 PAT)`);
         } catch (error) {
             console.error('레포지토리 로드 실패:', error);
         }
@@ -253,7 +245,6 @@ health_check_url = "/"`;
             const pat = pats.find(p => p.id === repoPatId);
             if (pat) {
                 githubUsername = pat.github_username || '';
-                console.log(`레포지토리 ${selectedRepo}에 대해 PAT "${pat.label}" 자동 선택`);
             }
         }
 

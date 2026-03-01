@@ -100,25 +100,18 @@ export function appendLogLine(line) {
  */
 export function updateBuildFromWebSocket(data) {
     if (data.type === 'log') {
-        console.log('📡 [Builds Store] 로그 추가:', data.line);
-        // 로그 라인 추가
         appendLogLine(data.line);
 
-        // 선택된 빌드의 로그면 스트리밍 활성화
         selectedBuild.subscribe(build => {
             if (build && build.id === data.build_id) {
                 isStreaming.set(true);
             }
         })();
     } else if (data.type === 'build_status') {
-        console.log('📡 [Builds Store] 빌드 상태 업데이트:', data);
-        // 빌드 상태 변경
         const { project_id, build_id, status } = data;
 
-        // 빌드 목록에서 해당 빌드 업데이트 (API 재호출 없이 직접 업데이트)
         builds.update(allBuilds => {
             if (allBuilds[project_id]) {
-                console.log('📡 [Builds Store] 빌드 목록 업데이트, 프로젝트:', project_id);
                 return {
                     ...allBuilds,
                     [project_id]: allBuilds[project_id].map(build =>
@@ -129,12 +122,9 @@ export function updateBuildFromWebSocket(data) {
             return allBuilds;
         });
 
-        // 선택된 빌드 업데이트
         selectedBuild.update(build => {
             if (build && build.id === build_id) {
-                // 완료 상태면 스트리밍 종료
                 if (status === 'Success' || status === 'Failed') {
-                    console.log('📡 [Builds Store] 빌드 완료, 스트리밍 종료');
                     isStreaming.set(false);
                 }
                 return { ...build, status, updated_at: data.timestamp };

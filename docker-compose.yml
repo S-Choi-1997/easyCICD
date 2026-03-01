@@ -1,10 +1,44 @@
 version: '3.8'
 
 services:
+  # Docker Socket Proxy: 빌드 컨테이너가 실제 docker.sock 대신
+  # 이 프록시를 통해 제한된 Docker API만 접근하도록 함.
+  # CONTAINERS=0으로 docker run/create/exec를 차단 → 호스트 탈출 방지.
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: easycicd-socket-proxy
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      # 허용: 이미지 빌드/풀/푸시만
+      - IMAGES=1
+      - BUILD=1
+      - PING=1
+      # 차단: 컨테이너 생성/실행/exec (공격 경로)
+      - CONTAINERS=0
+      - NETWORKS=0
+      - VOLUMES=0
+      - EXEC=0
+      - SECRETS=0
+      - SERVICES=0
+      - SWARM=0
+      - TASKS=0
+    networks:
+      - easycicd
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
   agent:
     image: choho97/lightweight-ci:latest
     container_name: easycicd-agent
     restart: unless-stopped
+
+    depends_on:
+      - socket-proxy
 
     # Load OAuth and other secrets from .env file
     env_file:
@@ -12,15 +46,22 @@ services:
 
     environment:
       - TZ=Asia/Seoul
+      # 빌드 컨테이너가 사용할 socket proxy 주소
+      - SOCKET_PROXY_HOST=easycicd-socket-proxy:2375
+      # 퍼시스턴트 로그 저장 위치 (컨테이너 외부 마운트)
+      - LOG_DIR=/logs
 
     volumes:
-      # DOOD: Mount Docker socket
+      # 에이전트 자신은 실제 docker.sock 사용 (컨테이너 관리 목적)
       - /var/run/docker.sock:/var/run/docker.sock
 
       # Persistent data (SQLite DB & build logs)
       # IMPORTANT: Use absolute path for DOOD compatibility
       # The agent will auto-detect this path for build/runtime containers
       - ./data:/data
+
+      # Persistent logs (host-side: ./logs, visible outside the container)
+      - ./logs:/logs
 
       # Build cache (shared across builds)
       - cache-gradle:/cache/gradle
@@ -38,6 +79,37 @@ services:
 
     networks:
       - easycicd
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "10"
+
+  # Docker Events Logger: 컨테이너 생성/시작/종료 등 모든 Docker 이벤트를
+  # 호스트 파일시스템에 영구 기록 (./logs/docker-events/events.YYYY-MM-DD.log)
+  docker-events-logger:
+    image: docker:cli
+    container_name: easycicd-events-logger
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./logs:/logs
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /logs/docker-events
+        docker events --format '{{json .}}' | while IFS= read -r line; do
+          echo "$$line" >> "/logs/docker-events/events.$$(date +%Y-%m-%d).log"
+        done
+    networks:
+      - easycicd
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   easycicd:

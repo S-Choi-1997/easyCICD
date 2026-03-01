@@ -184,6 +184,12 @@ async fn google_callback(
     // Check email whitelist
     if !is_email_allowed(&ctx, &user_info.email).await {
         warn!("[{}] Email not in whitelist: {}", trace_id, user_info.email);
+        tracing::warn!(
+            target: "audit",
+            event = "user.login_denied",
+            email = %user_info.email,
+            reason = "not_in_whitelist",
+        );
         ctx.logger.api_exit(&trace_id, "GET", "/auth/google/callback", timer.elapsed_ms(), 403);
         return Redirect::temporary("/login?error=not_allowed").into_response();
     }
@@ -246,6 +252,13 @@ async fn google_callback(
     cookies.add(session_cookie);
 
     info!("[{}] User {} logged in successfully", trace_id, user_info.email);
+    tracing::info!(
+        target: "audit",
+        event = "user.login",
+        email = %user_info.email,
+        user_id = user.id,
+        result = "success",
+    );
     ctx.logger.api_exit(&trace_id, "GET", "/auth/google/callback", timer.elapsed_ms(), 302);
 
     // Redirect to home page
@@ -285,10 +298,21 @@ async fn logout(
     if let Some(session_cookie) = cookies.get(SESSION_COOKIE) {
         let session_id = session_cookie.value();
 
+        // Resolve user email for audit log before deleting session
+        let user_email = ctx.session_repo.get_with_user(session_id).await
+            .ok().flatten()
+            .map(|(_, u)| u.email);
+
         // Delete session from database
         if let Err(e) = ctx.session_repo.delete(session_id).await {
             warn!("[{}] Failed to delete session: {}", trace_id, e);
         }
+
+        tracing::info!(
+            target: "audit",
+            event = "user.logout",
+            email = %user_email.as_deref().unwrap_or("unknown"),
+        );
     }
 
     // Clear session cookie

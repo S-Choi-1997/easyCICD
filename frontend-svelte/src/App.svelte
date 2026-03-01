@@ -37,10 +37,6 @@
   let currentUnsubscribe = null;
 
   onMount(async () => {
-    // Version output (debugging)
-    console.log('EasyCI/CD Frontend v2.1.0 - OAuth2 Auth');
-    console.log('Build timestamp:', new Date().toISOString());
-
     // Initialize auth first
     await initAuth();
 

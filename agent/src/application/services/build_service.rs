@@ -131,16 +131,11 @@ where
             self.settings_repo.get("github_pat").await.ok().flatten()
         };
 
-        // Build authenticated repo URL
-        let authenticated_repo = if let Some(token) = &github_token {
-            if project.repo.starts_with("https://github.com/") {
-                project.repo.replace("https://github.com/", &format!("https://{}@github.com/", token))
-            } else {
-                project.repo.clone()
-            }
-        } else {
-            project.repo.clone()
-        };
+        // GitHub PAT를 URL에 embed하지 않고 환경변수로 전달.
+        // 기존 방식(https://TOKEN@github.com/...)은 ps aux에서 토큰이 노출됨.
+        // 수정: 토큰을 GIT_CLONE_TOKEN env var으로 전달하고 git credential store 사용.
+        let clone_repo_url = project.repo.clone(); // 토큰 없는 원래 URL
+        let has_token = github_token.is_some();
 
         // Construct full build command with git clone inside container
         let working_dir_path = if let Some(wd) = &project.working_directory {
@@ -153,6 +148,11 @@ where
         // - CI=true: Treat warnings as errors (standard CI behavior)
         // - SKIP_PREFLIGHT_CHECK: Skip CRA version check (avoids false positives)
         let mut env_vars_list = vec!["CI=true".to_string(), "SKIP_PREFLIGHT_CHECK=true".to_string()];
+
+        // GitHub PAT를 URL 대신 환경변수로 전달 (ps aux 노출 방지)
+        if let Some(token) = &github_token {
+            env_vars_list.push(format!("GIT_CLONE_TOKEN={}", token));
+        }
 
         // Parse and add user-defined build environment variables (JSON format)
         if let Some(build_env_json) = &project.build_env_vars {
@@ -172,6 +172,15 @@ where
             .map(|v| format!("export {}", v))
             .collect::<Vec<_>>()
             .join(" && ");
+
+        // git credential 설정: GIT_CLONE_TOKEN 환경변수를 git credential store로 등록.
+        // 토큰이 URL에 포함되지 않으므로 ps aux, git reflog에서 노출되지 않음.
+        let git_auth_setup = if has_token {
+            "git config --global credential.helper store && \
+             printf 'https://oauth2:%s@github.com\\n' \"$GIT_CLONE_TOKEN\" > /root/.git-credentials && "
+        } else {
+            ""
+        };
 
         // build_image 기반으로 프로젝트 타입 감지 (cache_type과 독립적으로 동작)
         let build_image_lower = project.build_image.to_lowercase();
@@ -216,22 +225,26 @@ where
         };
 
         // output_copy_command가 비어있으면 추가하지 않음 (이중 복사 방지)
+        // 순서: env_exports 먼저 (GIT_CLONE_TOKEN export 포함) → git_auth_setup → git clone → build.
+        // git_auth_setup이 $GIT_CLONE_TOKEN을 참조하므로 env_exports가 반드시 선행되어야 함.
         let full_build_command = if output_copy_command.is_empty() {
             format!(
-                "git clone --depth 1 --branch {} {} /workspace && cd /workspace{} && {} && {}",
-                project.branch,
-                authenticated_repo,
-                working_dir_path,
+                "{} && {}git clone --depth 1 --branch {} {} /workspace && cd /workspace{} && {}",
                 env_exports,
+                git_auth_setup,
+                project.branch,
+                clone_repo_url,
+                working_dir_path,
                 project.build_command
             )
         } else {
             format!(
-                "git clone --depth 1 --branch {} {} /workspace && cd /workspace{} && {} && {} && {}",
-                project.branch,
-                authenticated_repo,
-                working_dir_path,
+                "{} && {}git clone --depth 1 --branch {} {} /workspace && cd /workspace{} && {} && {}",
                 env_exports,
+                git_auth_setup,
+                project.branch,
+                clone_repo_url,
+                working_dir_path,
                 project.build_command,
                 output_copy_command
             )

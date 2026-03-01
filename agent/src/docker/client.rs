@@ -27,16 +27,22 @@ pub struct DockerClient {
     docker: Docker,
     host_data_path: Option<String>,
     gateway_ip: String,
+    /// 빌드 컨테이너가 사용할 Docker socket proxy 주소 (TCP, "host:port" 형태).
+    /// 환경변수 SOCKET_PROXY_HOST로 설정. 비어있으면 빌드 컨테이너에 Docker 미제공.
+    socket_proxy_host: String,
 }
 
 impl DockerClient {
     pub fn new() -> Result<Self> {
         let docker = Docker::connect_with_local_defaults()
             .context("Failed to connect to Docker daemon")?;
+        let socket_proxy_host = std::env::var("SOCKET_PROXY_HOST")
+            .unwrap_or_else(|_| "socket-proxy:2375".to_string());
         Ok(Self {
             docker,
             host_data_path: None,
             gateway_ip: "172.17.0.1".to_string(),
+            socket_proxy_host,
         })
     }
 
@@ -44,10 +50,14 @@ impl DockerClient {
         let docker = Docker::connect_with_local_defaults()
             .context("Failed to connect to Docker daemon")?;
 
+        let socket_proxy_host = std::env::var("SOCKET_PROXY_HOST")
+            .unwrap_or_else(|_| "socket-proxy:2375".to_string());
+
         let mut client = Self {
             docker: docker.clone(),
             host_data_path: None,
             gateway_ip: "172.17.0.1".to_string(),
+            socket_proxy_host,
         };
 
         // Detect host path and gateway IP by inspecting our own container
@@ -208,10 +218,11 @@ impl DockerClient {
         info!("  Output: {} (host: {})", output_path.display(), host_output.display());
         info!("  Cache: {} (host: {})", cache_path.display(), host_cache.display());
 
+        // docker.sock을 직접 마운트하지 않음 — 빌드 컨테이너는 socket proxy를 사용.
+        // 이전 코드: "/var/run/docker.sock:/var/run/docker.sock" 마운트가 있었으나
+        // 공격자가 docker run --network=host 등을 실행해 호스트를 탈출할 수 있었음.
         let mut binds = vec![
             format!("{}:/output", host_output.display()),
-            // Mount Docker socket for Docker-outside-of-Docker (DOOD)
-            "/var/run/docker.sock:/var/run/docker.sock".to_string(),
         ];
 
         // Add cache mount if provided
@@ -227,13 +238,30 @@ impl DockerClient {
             binds.push(format!("{}:{}", host_cache.display(), cache_mount));
         }
 
+        // 빌드 컨테이너 환경변수:
+        // DOCKER_HOST: socket proxy TCP 주소 (docker build/push만 허용, container 생성 차단)
+        let mut container_env = Vec::new();
+        if !self.socket_proxy_host.is_empty() {
+            container_env.push(format!("DOCKER_HOST=tcp://{}", self.socket_proxy_host));
+            info!("Build container will use socket proxy: tcp://{}", self.socket_proxy_host);
+        }
+
         let config = Config {
             image: Some(image.to_string()),
             cmd: Some(vec!["/bin/sh".to_string(), "-c".to_string(), command.to_string()]),
             working_dir: Some("/".to_string()),  // Start at root, git clone creates /workspace
+            env: if container_env.is_empty() { None } else { Some(container_env) },
             host_config: Some(bollard::models::HostConfig {
                 binds: Some(binds),
                 auto_remove: Some(false),
+                // 리소스 제한: 채굴 등 자원 소진 공격 방지
+                memory: Some(2 * 1024 * 1024 * 1024),      // 메모리 최대 2GB
+                memory_swap: Some(2 * 1024 * 1024 * 1024),  // 스왑 비활성화 (swap = memory)
+                nano_cpus: Some(2_000_000_000i64),           // CPU 최대 2코어
+                pids_limit: Some(1000i64),                   // 프로세스 최대 1000개
+                // 보안 강화: Linux capabilities 전부 제거, 권한 상승 불가
+                cap_drop: Some(vec!["ALL".to_string()]),
+                security_opt: Some(vec!["no-new-privileges:true".to_string()]),
                 ..Default::default()
             }),
             ..Default::default()
@@ -253,6 +281,23 @@ impl DockerClient {
             .context("Failed to create container")?;
 
         let container_id = container.id;
+
+        // socket proxy에 접근할 수 있도록 easycicd 네트워크에 연결.
+        // 빌드 컨테이너는 이 네트워크를 통해 socket-proxy:2375에 도달함.
+        if !self.socket_proxy_host.is_empty() {
+            if let Err(e) = self.docker
+                .connect_network(
+                    "easycicd_easycicd",
+                    bollard::network::ConnectNetworkOptions {
+                        container: container_id.as_str(),
+                        ..Default::default()
+                    },
+                )
+                .await
+            {
+                warn!("Failed to connect build container to easycicd network (docker commands may not work): {}", e);
+            }
+        }
 
         info!("Starting build container: {}", container_id);
         self.docker
@@ -442,6 +487,10 @@ impl DockerClient {
                     name: Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED),
                     ..Default::default()
                 }),
+                // 리소스 제한: 런타임 컨테이너가 호스트 자원을 독점하지 못하도록
+                memory: Some(1024 * 1024 * 1024),   // 메모리 최대 1GB
+                nano_cpus: Some(1_000_000_000i64),  // CPU 최대 1코어
+                pids_limit: Some(500i64),            // 프로세스 최대 500개
                 ..Default::default()
             }),
             exposed_ports: Some({

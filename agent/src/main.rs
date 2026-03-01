@@ -18,7 +18,7 @@ use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tower_cookies::CookieManagerLayer;
 use tracing::{info, error};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
 
 use sqlx::SqlitePool;
 use state::AppContext;
@@ -36,16 +36,57 @@ async fn main() -> Result<()> {
     // Load environment variables from .env file
     dotenvy::dotenv().ok();
 
-    // Initialize tracing
+    // -------------------------------------------------------------------------
+    // Logging setup: 3-layer persistent logging
+    //   1. Console  – human-readable, for docker logs / live monitoring
+    //   2. File     – JSON rotating daily to /logs/agent/  (all events)
+    //   3. Audit    – JSON rotating daily to /logs/audit/  (security events only)
+    // -------------------------------------------------------------------------
+    let log_dir = std::env::var("LOG_DIR").unwrap_or_else(|_| "/logs".to_string());
+    std::fs::create_dir_all(format!("{}/agent", log_dir))?;
+    std::fs::create_dir_all(format!("{}/audit", log_dir))?;
+
+    // Daily-rotating file appenders
+    let agent_appender = tracing_appender::rolling::daily(
+        format!("{}/agent", log_dir),
+        "agent.log",
+    );
+    let (agent_writer, _agent_log_guard) = tracing_appender::non_blocking(agent_appender);
+
+    let audit_appender = tracing_appender::rolling::daily(
+        format!("{}/audit", log_dir),
+        "audit.log",
+    );
+    let (audit_writer, _audit_log_guard) = tracing_appender::non_blocking(audit_appender);
+
+    // Audit layer only captures events emitted with target: "audit"
+    let audit_filter = tracing_subscriber::filter::Targets::new()
+        .with_target("audit", tracing::Level::INFO);
+
+    let global_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info".into());
+
     tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
+        .with(global_filter)
+        // Layer 1: console (human-readable)
         .with(tracing_subscriber::fmt::layer())
+        // Layer 2: file (JSON, all application logs)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(agent_writer),
+        )
+        // Layer 3: audit file (JSON, security events only)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(audit_writer)
+                .with_filter(audit_filter),
+        )
         .init();
 
     info!("Starting Easy CI/CD Agent");
+    info!("Persistent logs → {}/agent/  |  audit → {}/audit/", log_dir, log_dir);
 
     // Create data directory structure
     std::fs::create_dir_all("/data/easycicd")?;
@@ -125,8 +166,11 @@ async fn main() -> Result<()> {
         .route("/ws", get(ws_handler))
         // Auth routes (no auth required)
         .nest("/auth", auth_routes())
-        // Admin routes (no auth required - for initial setup like whitelist)
-        .nest("/admin", admin_routes())
+        // Admin routes (requires authentication)
+        // 초기 설정: 화이트리스트가 비어있으면 모든 Google 계정으로 로그인 가능.
+        // 관리자가 첫 로그인 후 인증된 상태로 이메일을 추가하면 됨.
+        .nest("/admin", admin_routes()
+            .layer(middleware::from_fn_with_state(context.clone(), require_auth)))
         // Protected API routes (auth middleware applied)
         .nest("/api", api_routes()
             .layer(middleware::from_fn_with_state(context.clone(), require_auth)))

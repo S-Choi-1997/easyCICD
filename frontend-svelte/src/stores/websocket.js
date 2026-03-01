@@ -20,7 +20,6 @@ export function initWebSocket() {
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
-        console.log('[WebSocket] Connected');
         wsConnected.set(true);
         wsInstance.set(ws);
     };
@@ -28,46 +27,32 @@ export function initWebSocket() {
     ws.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            console.log('🔌 [WebSocket RAW] Received message:', data);
             messages.update(msgs => [...msgs, data]);
 
-            // 구독자에게 메시지 전달
             subscriptions.update(subs => {
-                console.log('🔌 [WebSocket RAW] Active subscriptions:', subs.size);
-                subs.forEach((callback, key) => {
-                    console.log('🔌 [WebSocket RAW] Calling subscriber:', key);
-                    callback(data);
-                });
+                subs.forEach((callback) => callback(data));
                 return subs;
             });
         } catch (error) {
-            console.error('[WebSocket] Message parsing error:', error);
+            console.error('[WebSocket] 메시지 파싱 오류:', error);
         }
     };
 
-    ws.onerror = (error) => {
-        console.error('[WebSocket] Error:', error);
-    };
+    ws.onerror = () => {};
 
     ws.onclose = () => {
-        console.log('[WebSocket] Disconnected, reconnecting in 3s...');
         wsConnected.set(false);
         wsInstance.set(null);
 
-        // Store current subscriptions before reconnecting
         let currentSubscriptions;
         subscriptions.update(subs => {
             currentSubscriptions = new Map(subs);
             return subs;
         });
 
-        // Reconnect after 3 seconds
         setTimeout(() => {
             const newWs = initWebSocket();
-
-            // Re-establish subscriptions after connection is established
             newWs.addEventListener('open', () => {
-                console.log('[WebSocket] Reconnected, restoring subscriptions');
                 subscriptions.set(currentSubscriptions);
             }, { once: true });
         }, 3000);

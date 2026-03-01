@@ -1,5 +1,5 @@
 use std::time::Instant;
-use tracing::{info, warn, error};
+use tracing::{debug, info, error};
 
 /// BoundaryLogger - 모든 모듈 경계에서 로깅을 담당
 ///
@@ -196,10 +196,10 @@ impl BoundaryLogger {
         );
     }
 
-    /// 이벤트 발행
+    /// 이벤트 발행 (ContainerLog 등 고빈도 이벤트 포함 → debug 레벨)
     /// 예: [BuildService→EventBus] emit [EVT↗] BuildStatus::Building
     pub fn event_emit(&self, trace_id: &str, from: &str, event_type: &str) {
-        info!(
+        debug!(
             trace_id = %trace_id,
             from = %from,
             event_type = %event_type,

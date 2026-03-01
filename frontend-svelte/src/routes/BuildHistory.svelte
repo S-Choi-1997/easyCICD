@@ -40,9 +40,7 @@
 
     ws = new WebSocket(wsUrl);
 
-    ws.onopen = () => {
-      console.log('WebSocket connected');
-    };
+    ws.onopen = () => {};
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
@@ -54,7 +52,6 @@
     };
 
     ws.onclose = () => {
-      console.log('WebSocket closed, reconnecting...');
       setTimeout(connectWebSocket, 3000);
     };
   }

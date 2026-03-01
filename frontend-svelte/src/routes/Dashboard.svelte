@@ -46,72 +46,44 @@
 
     // Subscribe to WebSocket messages for real-time updates
     unsubscribeWs = subscribe('dashboard', (data) => {
-      console.log('📡 [WebSocket] 받은 이벤트:', data.type, data);
-
-      // Handle container log events
       if (data.type === 'container_log' && data.container_db_id === currentContainerId && showLogsModal) {
-        console.log('📡 [WebSocket] 컨테이너 로그 추가');
         currentLogs = [...currentLogs, data.line];
       }
 
-      // Handle standalone container status updates
       if (data.type === 'standalone_container_status') {
-        console.log('📡 [WebSocket] 독립 컨테이너 상태 업데이트, ID:', data.container_db_id, '상태:', data.status);
         const index = containers.findIndex(c => c.id === data.container_db_id);
         if (index !== -1) {
-          const newStatus = data.status;
-          console.log('📡 [WebSocket] 상태 변경:', containers[index].status, '->', newStatus);
-
           containers = containers.map((c, i) =>
             i === index ? {
               ...c,
-              status: newStatus,
+              status: data.status,
               container_id: data.docker_id,
             } : c
           );
 
-          // Clear transition state when status changes
           if (containerTransitions.has(data.container_db_id)) {
             containerTransitions.delete(data.container_db_id);
             containerTransitions = new Map(containerTransitions);
           }
-
-          console.log('📡 [WebSocket] containers 배열 업데이트 완료');
         } else {
-          console.warn('📡 [WebSocket] 컨테이너를 찾을 수 없음, 전체 목록 다시 로드');
           loadContainers();
         }
       }
 
-      // Handle project container status updates (from start/stop/restart APIs)
       if (data.type === 'container_status') {
-        console.log('📡 [WebSocket] 프로젝트 컨테이너 상태 업데이트, 프로젝트 ID:', data.project_id, '슬롯:', data.slot, '상태:', data.status);
-
-        // Reload projects to get updated container state from database
-        // Note: start/stop events don't include actual Docker container IDs,
-        // so we need to refresh the full project data
         loadProjects();
       }
 
-      // Handle project container status updates (Blue/Green)
       if (data.type === 'project_container_status') {
-        console.log('📡 [WebSocket] 프로젝트 컨테이너 상태 업데이트, 프로젝트 ID:', data.project_id, '슬롯:', data.slot, '상태:', data.status);
-
         projects.update(projectList => {
           return projectList.map(proj => {
             if (proj.id === data.project_id) {
-              console.log('📡 [WebSocket] 프로젝트 찾음:', proj.name, '슬롯:', data.slot);
-
-              // 해당 슬롯의 컨테이너 ID 업데이트
               const updates = { ...proj };
-
               if (data.slot === 'Blue') {
                 updates.blue_container_id = data.status === 'running' ? data.docker_id : null;
               } else if (data.slot === 'Green') {
                 updates.green_container_id = data.status === 'running' ? data.docker_id : null;
               }
-
-              console.log('📡 [WebSocket] 프로젝트 업데이트:', updates);
               return updates;
             }
             return proj;
@@ -119,34 +91,22 @@
         });
       }
 
-      // Handle build status updates
       if (data.type === 'build_status') {
-        console.log('📡 [WebSocket] 빌드 상태 업데이트, 프로젝트 ID:', data.project_id, '상태:', data.status);
-
         projects.update(projectList => {
           return projectList.map(proj => {
             if (proj.id === data.project_id) {
-              return {
-                ...proj,
-                last_build_status: data.status,
-              };
+              return { ...proj, last_build_status: data.status };
             }
             return proj;
           });
         });
       }
 
-      // Handle deployment status updates (슬롯 전환)
       if (data.type === 'deployment') {
-        console.log('📡 [WebSocket] 배포 상태 업데이트, 프로젝트 ID:', data.project_id, '슬롯:', data.slot);
-
         projects.update(projectList => {
           return projectList.map(proj => {
             if (proj.id === data.project_id) {
-              return {
-                ...proj,
-                active_slot: data.slot,
-              };
+              return { ...proj, active_slot: data.slot };
             }
             return proj;
           });
@@ -199,28 +159,16 @@
   }
 
   async function loadContainers() {
-    console.log('📦 [loadContainers] 컨테이너 목록 로드 시작');
     containersLoading = true;
     try {
       const response = await fetch(`${API_BASE}/containers`);
-      console.log('📦 [loadContainers] API 응답:', response.status, response.ok);
       if (response.ok) {
-        const newContainers = await response.json();
-        console.log('📦 [loadContainers] 받은 데이터:', newContainers);
-
-        // 각 컨테이너의 상태를 자세히 출력
-        newContainers.forEach((c, idx) => {
-          console.log(`📦 [Container ${idx}] ID=${c.id}, Name=${c.name}, Status=${c.status}, ContainerID=${c.container_id}`);
-        });
-
-        containers = newContainers;
-        console.log('📦 [loadContainers] containers 변수 업데이트 완료, 개수:', containers.length);
+        containers = await response.json();
       }
     } catch (error) {
-      console.error('❌ [loadContainers] 컨테이너 로드 실패:', error);
+      console.error('컨테이너 로드 실패:', error);
     } finally {
       containersLoading = false;
-      console.log('📦 [loadContainers] 로딩 완료');
     }
   }
 
@@ -274,23 +222,13 @@
 
   // 독립 컨테이너 제어
   async function handleContainerStart(id) {
-    console.log('🚀 [handleContainerStart] 시작 버튼 클릭됨, ID:', id);
-    console.log('🚀 [handleContainerStart] 현재 transition 상태:', containerTransitions.has(id) ? containerTransitions.get(id) : 'none');
+    if (containerTransitions.has(id)) return;
 
-    // Prevent duplicate requests
-    if (containerTransitions.has(id)) {
-      console.warn('🚀 [handleContainerStart] 이미 처리 중인 요청이 있어 무시됨');
-      return;
-    }
-
-    // Set transition state
     containerTransitions.set(id, 'starting');
     containerTransitions = new Map(containerTransitions);
 
-    // Safety timeout: clear transition state after 30 seconds
     const timeoutId = setTimeout(() => {
       if (containerTransitions.has(id)) {
-        console.warn('🚀 [handleContainerStart] 타임아웃: transition 상태 강제 제거');
         containerTransitions.delete(id);
         containerTransitions = new Map(containerTransitions);
       }
@@ -298,35 +236,25 @@
 
     try {
       const response = await fetch(`${API_BASE}/containers/${id}/start`, { method: 'POST' });
-      console.log('🚀 [handleContainerStart] API 응답:', response.status, response.ok);
 
       if (!response.ok) {
         const data = await response.json();
-        const errorMessage = data.error || '컨테이너를 시작할 수 없습니다';
-
-        // Clear timeout and transition state on error
         clearTimeout(timeoutId);
         containerTransitions.delete(id);
         containerTransitions = new Map(containerTransitions);
 
-        // Show error modal
         showErrorModal = true;
         errorModalTitle = '컨테이너 시작 실패';
-        errorModalMessage = errorMessage;
+        errorModalMessage = data.error || '컨테이너를 시작할 수 없습니다';
         errorModalDetails = `컨테이너 ID: ${id}\nHTTP 상태: ${response.status}`;
       } else {
-        // Clear timeout on success (WebSocket will handle state cleanup)
         clearTimeout(timeoutId);
       }
     } catch (error) {
-      console.error('❌ [handleContainerStart] 에러:', error);
-
-      // Clear timeout and transition state on error
       clearTimeout(timeoutId);
       containerTransitions.delete(id);
       containerTransitions = new Map(containerTransitions);
 
-      // Show error modal
       showErrorModal = true;
       errorModalTitle = '컨테이너 시작 실패';
       errorModalMessage = '네트워크 오류가 발생했습니다';
@@ -335,23 +263,13 @@
   }
 
   async function handleContainerStop(id) {
-    console.log('🛑 [handleContainerStop] 중지 버튼 클릭됨, ID:', id);
-    console.log('🛑 [handleContainerStop] 현재 transition 상태:', containerTransitions.has(id) ? containerTransitions.get(id) : 'none');
+    if (containerTransitions.has(id)) return;
 
-    // Prevent duplicate requests
-    if (containerTransitions.has(id)) {
-      console.warn('🛑 [handleContainerStop] 이미 처리 중인 요청이 있어 무시됨');
-      return;
-    }
-
-    // Set transition state
     containerTransitions.set(id, 'stopping');
     containerTransitions = new Map(containerTransitions);
 
-    // Safety timeout: clear transition state after 30 seconds
     const timeoutId = setTimeout(() => {
       if (containerTransitions.has(id)) {
-        console.warn('🛑 [handleContainerStop] 타임아웃: transition 상태 강제 제거');
         containerTransitions.delete(id);
         containerTransitions = new Map(containerTransitions);
       }
@@ -359,35 +277,25 @@
 
     try {
       const response = await fetch(`${API_BASE}/containers/${id}/stop`, { method: 'POST' });
-      console.log('🛑 [handleContainerStop] API 응답:', response.status, response.ok);
 
       if (!response.ok) {
         const data = await response.json();
-        const errorMessage = data.error || '컨테이너를 중지할 수 없습니다';
-
-        // Clear timeout and transition state on error
         clearTimeout(timeoutId);
         containerTransitions.delete(id);
         containerTransitions = new Map(containerTransitions);
 
-        // Show error modal
         showErrorModal = true;
         errorModalTitle = '컨테이너 중지 실패';
-        errorModalMessage = errorMessage;
+        errorModalMessage = data.error || '컨테이너를 중지할 수 없습니다';
         errorModalDetails = `컨테이너 ID: ${id}\nHTTP 상태: ${response.status}`;
       } else {
-        // Clear timeout on success (WebSocket will handle state cleanup)
         clearTimeout(timeoutId);
       }
     } catch (error) {
-      console.error('❌ [handleContainerStop] 에러:', error);
-
-      // Clear timeout and transition state on error
       clearTimeout(timeoutId);
       containerTransitions.delete(id);
       containerTransitions = new Map(containerTransitions);
 
-      // Show error modal
       showErrorModal = true;
       errorModalTitle = '컨테이너 중지 실패';
       errorModalMessage = '네트워크 오류가 발생했습니다';
@@ -396,29 +304,20 @@
   }
 
   async function handleContainerDelete(id, name) {
-    console.log('🗑️ [handleContainerDelete] 삭제 버튼 클릭됨, ID:', id, 'Name:', name);
-    if (!confirm(`"${name}" 컨테이너를 삭제하시겠습니까?`)) {
-      console.log('❌ [handleContainerDelete] 사용자가 취소함');
-      return;
-    }
+    if (!confirm(`"${name}" 컨테이너를 삭제하시겠습니까?`)) return;
     try {
       const response = await fetch(`${API_BASE}/containers/${id}`, { method: 'DELETE' });
-      console.log('🗑️ [handleContainerDelete] API 응답:', response.status, response.ok);
       if (response.ok) {
-        console.log('✅ [handleContainerDelete] 성공, 컨테이너 목록에서 제거');
-        // Remove from local state immediately
         containers = containers.filter(c => c.id !== id);
       } else {
         alert('컨테이너를 삭제할 수 없습니다');
       }
     } catch (error) {
-      console.error('❌ [handleContainerDelete] 에러:', error);
       alert('컨테이너를 삭제할 수 없습니다: ' + error.message);
     }
   }
 
   async function handleViewLogs(id, name) {
-    console.log('📋 [handleViewLogs] 로그 버튼 클릭됨, ID:', id, 'Name:', name);
     currentContainerId = id;
     currentContainerName = name;
     currentLogs = ['로그를 불러오는 중...'];
@@ -497,15 +396,7 @@
   }
 
   function handleContainerClick(event, container) {
-    console.log('🐳 [handleContainerClick] 컨테이너 카드 클릭됨, Name:', container.name, 'ID:', container.id);
-    console.log('🐳 [handleContainerClick] event.target:', event.target.tagName, event.target.className);
-    console.log('🐳 [handleContainerClick] event.currentTarget:', event.currentTarget.className);
-
-    // Don't open modal if clicking on a button or interactive element
-    if (event.target.closest('button')) {
-      console.log('🐳 [handleContainerClick] 버튼 클릭 감지됨, 모달 열기 중지');
-      return;
-    }
+    if (event.target.closest('button')) return;
 
     currentContainer = container;
     showContainerDetailModal = true;
@@ -514,13 +405,6 @@
   $: totalCount = $projects.length + containers.length;
   $: loading = $projectsLoading || containersLoading;
 
-  // 컨테이너 배열이 변경될 때마다 상태 로그 출력
-  $: {
-    console.log('🔄 [Reactive] containers 배열 업데이트됨, 총 개수:', containers.length);
-    containers.forEach((c, idx) => {
-      console.log(`🔄 [Reactive Container ${idx}] ID=${c.id}, Name=${c.name}, Status=${c.status}`);
-    });
-  }
 </script>
 
 <header>
@@ -671,10 +555,7 @@
                     터미널
                   </button>
                   {#if container.status === 'running'}
-                    <button type="button" on:click|stopPropagation={(e) => {
-                              console.log('🔴 [BUTTON CLICK] 중지 버튼 클릭됨!', e);
-                              handleContainerStop(container.id);
-                            }}
+                    <button type="button" on:click|stopPropagation={() => handleContainerStop(container.id)}
                             class="btn btn-danger btn-sm"
                             title="중지"
                             disabled={containerTransitions.has(container.id)}>
@@ -688,10 +569,7 @@
                       {container.status === 'pulling' ? '풀링 중...' : '시작 중...'}
                     </button>
                   {:else}
-                    <button type="button" on:click|stopPropagation={(e) => {
-                              console.log('🟢 [BUTTON CLICK] 시작 버튼 클릭됨!', e);
-                              handleContainerStart(container.id);
-                            }}
+                    <button type="button" on:click|stopPropagation={() => handleContainerStart(container.id)}
                             class="btn btn-success btn-sm"
                             title="시작"
                             disabled={containerTransitions.has(container.id)}>
